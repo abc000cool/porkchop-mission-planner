@@ -141,7 +141,17 @@ function Scene({
   progress,
   effects,
 }: { mission: Mission; effects: boolean } & SceneShared) {
-  const { camera } = useThree();
+  const { camera, gl } = useThree();
+
+  // postprocessing's EffectComposer dereferences getContextAttributes(),
+  // which is null on some drivers/virtual GPUs — probe before enabling bloom
+  const fxSafe = useMemo(() => {
+    try {
+      return !!gl.getContext().getContextAttributes();
+    } catch {
+      return false;
+    }
+  }, [gl]);
 
   const maxActiveAu = Math.max(
     PLANETS[mission.departPlanet].semiMajorAxisAu,
@@ -275,7 +285,7 @@ function Scene({
         </Trail>
       </group>
 
-      {effects && (
+      {effects && fxSafe && (
         <EffectComposer multisampling={0}>
           <Bloom intensity={1.15} luminanceThreshold={1} mipmapBlur />
         </EffectComposer>

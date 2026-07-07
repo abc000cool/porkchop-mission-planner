@@ -1,5 +1,6 @@
+import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
-import { ArrowDownUp, Crosshair, Grid3X3, Wind } from 'lucide-react';
+import { ArrowDownUp, Crosshair, Grid3X3, Orbit, Wind } from 'lucide-react';
 import DualDateSlider from './DualDateSlider';
 import PlanetSelect from './PlanetSelect';
 import { DAY_MS, PLANETS, type PlanetId } from '../lib/orbitalConstants';
@@ -15,6 +16,8 @@ interface Props {
   arriveRange: [number, number];
   arrivalAuto: boolean;
   aerocapture: boolean;
+  prograde: boolean;
+  maxRevs: number;
   stepDays: number;
   gridDims: [number, number];
   computing: boolean;
@@ -26,6 +29,29 @@ interface Props {
   onArriveRange: (r: [number, number]) => void;
   onArrivalAuto: (auto: boolean) => void;
   onAerocapture: (on: boolean) => void;
+  onPrograde: (prograde: boolean) => void;
+  onMaxRevs: (revs: number) => void;
+}
+
+/** Live T− countdown to a departure timestamp. */
+function Countdown({ targetMs }: { targetMs: number }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const d = targetMs - now;
+  if (d <= 0) return <span className="text-text-lo">departure passed</span>;
+  const days = Math.floor(d / 86_400_000);
+  const h = Math.floor((d % 86_400_000) / 3_600_000);
+  const m = Math.floor((d % 3_600_000) / 60_000);
+  const s = Math.floor((d % 60_000) / 1000);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return (
+    <span className="text-amber">
+      T−{days}d {pad(h)}:{pad(m)}:{pad(s)}
+    </span>
+  );
 }
 
 const NOW = Date.now();
@@ -37,6 +63,8 @@ export default function ControlPanel({
   arriveRange,
   arrivalAuto,
   aerocapture,
+  prograde,
+  maxRevs,
   stepDays,
   gridDims,
   computing,
@@ -48,6 +76,8 @@ export default function ControlPanel({
   onArriveRange,
   onArrivalAuto,
   onAerocapture,
+  onPrograde,
+  onMaxRevs,
 }: Props) {
   const canAerocapture = PLANETS[arrivePlanet].hasAtmosphere;
   const tH = hohmannTofDays(departPlanet, arrivePlanet);
@@ -154,6 +184,62 @@ export default function ControlPanel({
         </section>
       )}
 
+      {/* Solver options */}
+      <section className="rounded-md border border-grid-line bg-panel-2/60 px-3 py-2.5">
+        <div className="flex items-center gap-2 text-[11px] tracking-[0.14em] text-text-mid uppercase">
+          <Orbit size={12} className="text-accent" /> Lambert solver
+        </div>
+        <div className="mt-2 flex items-center justify-between gap-2">
+          <div className="flex overflow-hidden rounded border border-grid-line">
+            {(
+              [
+                [true, 'prograde'],
+                [false, 'retrograde'],
+              ] as const
+            ).map(([val, label]) => (
+              <button
+                key={label}
+                type="button"
+                onClick={() => onPrograde(val)}
+                className={`px-2 py-1 font-mono text-[10px] tracking-wider uppercase transition-colors ${
+                  prograde === val
+                    ? 'bg-accent/15 text-accent'
+                    : 'text-text-lo hover:text-text-mid'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="font-mono text-[10px] tracking-wider text-text-lo uppercase">
+              revs
+            </span>
+            <div className="flex overflow-hidden rounded border border-grid-line">
+              {[0, 1].map((r) => (
+                <button
+                  key={r}
+                  type="button"
+                  onClick={() => onMaxRevs(r)}
+                  title={r === 0 ? 'direct transfers only' : 'include 1-revolution solutions'}
+                  className={`px-2 py-1 font-mono text-[10px] transition-colors ${
+                    maxRevs === r ? 'bg-accent/15 text-accent' : 'text-text-lo hover:text-text-mid'
+                  }`}
+                >
+                  {r === 0 ? '0' : '≤1'}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+        {(!prograde || maxRevs > 0) && (
+          <div className="mt-1.5 text-[10px] leading-snug text-amber/80">
+            {!prograde && 'retrograde transfers are usually far more expensive — for exploration. '}
+            {maxRevs > 0 && 'multi-rev: each cell keeps its cheapest branch.'}
+          </div>
+        )}
+      </section>
+
       {/* Grid stats */}
       <section className="rounded-md border border-grid-line bg-panel-2/60 px-3 py-2.5">
         <div className="flex items-center gap-2 text-[11px] tracking-[0.14em] text-text-mid uppercase">
@@ -206,6 +292,10 @@ export default function ControlPanel({
             <span className="text-right text-text-hi">{fmtNum(minimum.arrVinf)} km/s</span>
             <span className="text-text-lo">flight time</span>
             <span className="text-right text-text-hi">{Math.round(minimum.tofDays)} days</span>
+            <span className="text-text-lo">countdown</span>
+            <span className="text-right">
+              <Countdown targetMs={minimum.departMs} />
+            </span>
             {difficulty && (
               <>
                 <span className="text-text-lo">window width</span>

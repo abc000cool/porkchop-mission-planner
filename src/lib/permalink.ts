@@ -13,6 +13,8 @@ export interface ShareState {
   palette: string;
   aerocapture: boolean;
   rocketId: string;
+  prograde: boolean;
+  maxRevs: number;
   lockedDepartMs: number | null;
   lockedArriveMs: number | null;
 }
@@ -30,6 +32,8 @@ export function encodeShareState(s: ShareState): string {
   if (s.palette !== 'turbo') p.set('pal', s.palette);
   if (s.aerocapture) p.set('ac', '1');
   if (s.rocketId !== 'falconHeavy') p.set('rk', s.rocketId);
+  if (!s.prograde) p.set('pg', '0');
+  if (s.maxRevs > 0) p.set('mr', String(s.maxRevs));
   if (s.lockedDepartMs && s.lockedArriveMs) {
     p.set('ld', isoDate(s.lockedDepartMs));
     p.set('la', isoDate(s.lockedArriveMs));
@@ -68,6 +72,9 @@ export function decodeShareState(search: string): Partial<ShareState> | null {
   if (p.get('ac') === '1') out.aerocapture = true;
   const rk = p.get('rk');
   if (rk) out.rocketId = rk;
+  if (p.get('pg') === '0') out.prograde = false;
+  const mr = Number(p.get('mr'));
+  if (mr === 1 || mr === 2) out.maxRevs = mr;
   const ld = parseDate(p.get('ld'));
   const la = parseDate(p.get('la'));
   if (ld !== null && la !== null && la > ld) {

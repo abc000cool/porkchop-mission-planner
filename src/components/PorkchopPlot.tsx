@@ -322,7 +322,12 @@ export default function PorkchopPlot({
         if (hover) onSelect(hover.departMs, hover.arriveMs);
       }}
     >
-      <canvas ref={canvasRef} className="absolute inset-0" style={{ width: w, height: h }} />
+      <canvas
+        ref={canvasRef}
+        data-porkchop-canvas
+        className="absolute inset-0"
+        style={{ width: w, height: h }}
+      />
 
       {layout && (
         <svg className="pointer-events-none absolute inset-0" width={w} height={h}>

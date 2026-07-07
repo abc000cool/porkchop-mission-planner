@@ -18,6 +18,10 @@ export interface PorkchopParams {
   stepDays: number;
   /** Arrival capture burn set to zero (atmosphere does the braking). */
   aerocapture?: boolean;
+  /** Transfer direction. Default true (prograde). */
+  prograde?: boolean;
+  /** Max full revolutions; each cell keeps its cheapest branch. Default 0. */
+  maxRevs?: number;
 }
 
 export interface GridMinimum {
@@ -175,18 +179,29 @@ export function computePorkchopGrid(
 
       const depState = depStates[iDep];
       const sols = solveLambert(depState.r, arrState.r, tofDaysVal * DAY_S, MU_SUN, {
-        prograde: true,
-        maxRevs: 0,
+        prograde: params.prograde ?? true,
+        maxRevs: params.maxRevs ?? 0,
       });
       if (sols.length === 0) continue;
-      const sol = sols[0];
-      if (!Number.isFinite(sol.v1[0]) || !Number.isFinite(sol.v2[0])) continue;
 
-      const vinfDep = norm(sub(sol.v1, depState.v));
-      const vinfArr = norm(sub(sol.v2, arrState.v));
-      const dv =
-        departureBurnDv(vinfDep, params.departPlanet) +
-        captureBurnDv(vinfArr, params.arrivePlanet, params.aerocapture);
+      // keep the cheapest branch (matters only for multi-rev)
+      let dv = Infinity;
+      let vinfDep = NaN;
+      let vinfArr = NaN;
+      for (const sol of sols) {
+        if (!Number.isFinite(sol.v1[0]) || !Number.isFinite(sol.v2[0])) continue;
+        const vd = norm(sub(sol.v1, depState.v));
+        const va = norm(sub(sol.v2, arrState.v));
+        const cand =
+          departureBurnDv(vd, params.departPlanet) +
+          captureBurnDv(va, params.arrivePlanet, params.aerocapture);
+        if (cand < dv) {
+          dv = cand;
+          vinfDep = vd;
+          vinfArr = va;
+        }
+      }
+      if (!Number.isFinite(dv)) continue;
 
       const idx = iArr * nDep + iDep;
       totalDv[idx] = dv;
@@ -195,7 +210,7 @@ export function computePorkchopGrid(
       arrVinf[idx] = vinfArr;
       tofDays[idx] = tofDaysVal;
 
-      if (Number.isFinite(dv) && (min === null || dv < min.totalDv)) {
+      if (min === null || dv < min.totalDv) {
         min = {
           iDep,
           iArr,

@@ -94,12 +94,18 @@ export function arrivalTradeTable(
   return out;
 }
 
+export interface SolverOptions {
+  prograde?: boolean;
+  maxRevs?: number;
+}
+
 export function buildMission(
   departPlanet: PlanetId,
   arrivePlanet: PlanetId,
   departMs: number,
   arriveMs: number,
   aerocapture = false,
+  solver: SolverOptions = {},
 ): Mission | null {
   const tofDays = (arriveMs - departMs) / DAY_MS;
   if (tofDays <= 1) return null;
@@ -107,11 +113,26 @@ export function buildMission(
   const depState = planetState(departPlanet, departMs);
   const arrState = planetState(arrivePlanet, arriveMs);
   const sols = solveLambert(depState.r, arrState.r, tofDays * DAY_S, MU_SUN, {
-    prograde: true,
-    maxRevs: 0,
+    prograde: solver.prograde ?? true,
+    maxRevs: solver.maxRevs ?? 0,
   });
   if (sols.length === 0) return null;
-  const { v1, v2 } = sols[0];
+
+  // cheapest branch, consistent with the grid
+  let best = sols[0];
+  let bestDv = Infinity;
+  for (const sol of sols) {
+    if (!Number.isFinite(sol.v1[0])) continue;
+    const vd = norm(sub(sol.v1, depState.v));
+    const va = norm(sub(sol.v2, arrState.v));
+    const cand = departureBurnDv(vd, departPlanet) + captureBurnDv(va, arrivePlanet, aerocapture);
+    if (cand < bestDv) {
+      bestDv = cand;
+      best = sol;
+    }
+  }
+  if (!Number.isFinite(bestDv)) return null;
+  const { v1, v2 } = best;
 
   const depVinf = norm(sub(v1, depState.v));
   const arrVinf = norm(sub(v2, arrState.v));

@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { motion } from 'framer-motion';
-import { Box, Lock, X } from 'lucide-react';
+import { Box, FileText, Lock, X } from 'lucide-react';
 import { arrivalTradeTable, type Mission } from '../lib/mission';
 import { PLANETS } from '../lib/orbitalConstants';
 import { fmtDate, fmtNum } from '../lib/format';
@@ -12,6 +12,7 @@ interface Props {
   show3D: boolean;
   onToggle3D: () => void;
   onClear: () => void;
+  onExportPdf: () => void;
 }
 
 function BurnBar({
@@ -53,6 +54,7 @@ export default function MissionDetailPanel({
   show3D,
   onToggle3D,
   onClear,
+  onExportPdf,
 }: Props) {
   const dep = PLANETS[mission.departPlanet];
   const arr = PLANETS[mission.arrivePlanet];
@@ -169,6 +171,15 @@ export default function MissionDetailPanel({
       >
         <Box size={13} />
         {show3D ? 'Close 3D trajectory' : 'Open 3D trajectory'}
+      </button>
+
+      <button
+        type="button"
+        onClick={onExportPdf}
+        className="mt-2 flex w-full items-center justify-center gap-2 rounded-md border border-grid-line px-3 py-2 font-mono text-[11px] tracking-[0.2em] text-text-mid uppercase transition-colors hover:border-amber/60 hover:text-amber"
+      >
+        <FileText size={13} />
+        Export PDF report
       </button>
     </motion.section>
   );

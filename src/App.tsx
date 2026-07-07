@@ -77,6 +77,8 @@ export default function App() {
       : 'turbo',
   );
   const [aerocapture, setAerocapture] = useState(URL_STATE?.aerocapture ?? false);
+  const [prograde, setPrograde] = useState(URL_STATE?.prograde ?? true);
+  const [maxRevs, setMaxRevs] = useState(URL_STATE?.maxRevs ?? 0);
   const [rocketId, setRocketId] = useState(
     URL_STATE?.rocketId && URL_STATE.rocketId in ROCKET_BY_ID ? URL_STATE.rocketId : 'falconHeavy',
   );
@@ -103,8 +105,10 @@ export default function App() {
       arriveEndMs: config.arriveRange[1],
       stepDays,
       aerocapture,
+      prograde,
+      maxRevs,
     }),
-    [config, stepDays, aerocapture],
+    [config, stepDays, aerocapture, prograde, maxRevs],
   );
 
   const { grid, computing, progress, elapsedMs } = usePorkchopGrid(params);
@@ -141,12 +145,13 @@ export default function App() {
         departMs,
         arriveMs,
         aerocapture,
+        { prograde, maxRevs },
       );
       if (!mission) return;
       setLocked(mission);
       if (!userClosed3D.current) setShow3D(true);
     },
-    [config.departPlanet, config.arrivePlanet, aerocapture],
+    [config.departPlanet, config.arrivePlanet, aerocapture, prograde, maxRevs],
   );
 
   // restore a locked window from the permalink, once
@@ -171,11 +176,13 @@ export default function App() {
       palette,
       aerocapture,
       rocketId,
+      prograde,
+      maxRevs,
       lockedDepartMs: locked?.departMs ?? null,
       lockedArriveMs: locked?.arriveMs ?? null,
     });
     window.history.replaceState(null, '', `${window.location.pathname}?${qs}`);
-  }, [config, metric, palette, aerocapture, rocketId, locked]);
+  }, [config, metric, palette, aerocapture, rocketId, prograde, maxRevs, locked]);
 
   const onPlanets = useCallback((dep: PlanetId, arr: PlanetId) => {
     setConfig(defaultConfig(dep, arr));
@@ -213,11 +220,59 @@ export default function App() {
     (on: boolean) => {
       setAerocapture(on);
       setLocked((m) =>
-        m ? buildMission(m.departPlanet, m.arrivePlanet, m.departMs, m.arriveMs, on) : m,
+        m
+          ? buildMission(m.departPlanet, m.arrivePlanet, m.departMs, m.arriveMs, on, {
+              prograde,
+              maxRevs,
+            })
+          : m,
       );
     },
-    [],
+    [prograde, maxRevs],
   );
+
+  const onPrograde = useCallback(
+    (pg: boolean) => {
+      setPrograde(pg);
+      setLocked((m) =>
+        m
+          ? buildMission(m.departPlanet, m.arrivePlanet, m.departMs, m.arriveMs, aerocapture, {
+              prograde: pg,
+              maxRevs,
+            })
+          : m,
+      );
+    },
+    [aerocapture, maxRevs],
+  );
+
+  const onMaxRevs = useCallback(
+    (mr: number) => {
+      setMaxRevs(mr);
+      setLocked((m) =>
+        m
+          ? buildMission(m.departPlanet, m.arrivePlanet, m.departMs, m.arriveMs, aerocapture, {
+              prograde,
+              maxRevs: mr,
+            })
+          : m,
+      );
+    },
+    [aerocapture, prograde],
+  );
+
+  const exportPdf = useCallback(async () => {
+    if (!locked) return;
+    const { generateMissionReport } = await import('./lib/report');
+    generateMissionReport({
+      mission: locked,
+      rocket: ROCKET_BY_ID[rocketId],
+      difficulty,
+      aerocapture,
+      plotCanvas: document.querySelector<HTMLCanvasElement>('[data-porkchop-canvas]'),
+      shareUrl: window.location.href,
+    });
+  }, [locked, rocketId, difficulty, aerocapture]);
 
   const copyLink = useCallback(() => {
     navigator.clipboard.writeText(window.location.href).then(() => {
@@ -272,6 +327,8 @@ export default function App() {
             arriveRange={config.arriveRange}
             arrivalAuto={config.arrivalAuto}
             aerocapture={aerocapture}
+            prograde={prograde}
+            maxRevs={maxRevs}
             stepDays={stepDays}
             gridDims={gridDims}
             computing={computing}
@@ -283,6 +340,8 @@ export default function App() {
             onArriveRange={onArriveRange}
             onArrivalAuto={onArrivalAuto}
             onAerocapture={onAerocapture}
+            onPrograde={onPrograde}
+            onMaxRevs={onMaxRevs}
           />
         </aside>
 
@@ -421,6 +480,7 @@ export default function App() {
                   setLocked(null);
                   setShow3D(false);
                 }}
+                onExportPdf={exportPdf}
               />
             )}
           </AnimatePresence>
