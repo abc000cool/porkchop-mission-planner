@@ -1,15 +1,43 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { contours as d3Contours } from 'd3-contour';
-import { scaleSequentialLog } from 'd3-scale';
-import { interpolateTurbo } from 'd3-scale-chromatic';
+import { scaleSequential, scaleSequentialLog } from 'd3-scale';
+import {
+  interpolateCividis,
+  interpolateInferno,
+  interpolatePlasma,
+  interpolateTurbo,
+  interpolateViridis,
+} from 'd3-scale-chromatic';
 import type { PorkchopGrid } from '../lib/porkchop';
 import { fmtDate, fmtMonth, fmtNum } from '../lib/format';
+
+export type PlotMetric = 'dv' | 'tof' | 'c3';
+
+export const PALETTES = {
+  turbo: interpolateTurbo,
+  viridis: interpolateViridis,
+  inferno: interpolateInferno,
+  plasma: interpolatePlasma,
+  cividis: interpolateCividis,
+} as const;
+
+export type PaletteName = keyof typeof PALETTES;
+
+const METRIC_META: Record<PlotMetric, { label: string; log: boolean; clampQ: number }> = {
+  dv: { label: 'Δv km/s', log: true, clampQ: 0.92 },
+  tof: { label: 'TOF days', log: false, clampQ: 1 },
+  c3: { label: 'C3 km²/s²', log: true, clampQ: 0.9 },
+};
 
 interface Props {
   grid: PorkchopGrid | null;
   computing: boolean;
   progress: number;
+  metric: PlotMetric;
+  palette: PaletteName;
+  locked: { departMs: number; arriveMs: number } | null;
+  onSelect: (departMs: number, arriveMs: number) => void;
 }
 
 interface HoverCell {
@@ -66,7 +94,15 @@ function monthTicks(t0: number, t1: number, maxTicks: number): number[] {
 const quantile = (sorted: number[], q: number) =>
   sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
 
-export default function PorkchopPlot({ grid, computing, progress }: Props) {
+export default function PorkchopPlot({
+  grid,
+  computing,
+  progress,
+  metric,
+  palette,
+  locked,
+  onSelect,
+}: Props) {
   const [wrapRef, { w, h }] = useElementSize();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [hover, setHover] = useState<HoverCell | null>(null);
@@ -93,21 +129,29 @@ export default function PorkchopPlot({ grid, computing, progress }: Props) {
     return { nDep, nArr, dep0, dep1, arr0, arr1, plotW, plotH, xOfMs, yOfMs, xOfCoord, yOfCoord };
   }, [grid, w, h]);
 
+  const metricValues = useMemo(() => {
+    if (!grid) return null;
+    return metric === 'dv' ? grid.totalDv : metric === 'tof' ? grid.tofDays : grid.depC3;
+  }, [grid, metric]);
+
   const scaleInfo = useMemo(() => {
-    if (!grid || !grid.min) return null;
-    const finite = Array.from(grid.totalDv).filter(Number.isFinite);
+    if (!grid || !grid.min || !metricValues) return null;
+    const meta = METRIC_META[metric];
+    const interp = PALETTES[palette];
+    const finite = Array.from(metricValues).filter(Number.isFinite);
     if (finite.length < 8) return null;
     finite.sort((a, b) => a - b);
-    const lo = finite[0];
-    let hi = quantile(finite, 0.92);
+    const lo = Math.max(finite[0], 1e-6);
+    let hi = quantile(finite, meta.clampQ);
     if (!(hi > lo)) hi = lo * 1.5 + 1e-6;
-    const thresholds = Array.from(
-      { length: N_BANDS },
-      (_, i) => lo * Math.pow(hi / lo, i / (N_BANDS - 1)),
-    );
-    const color = scaleSequentialLog(interpolateTurbo).domain([lo, hi]);
-    return { lo, hi, thresholds, color };
-  }, [grid]);
+    const thresholds = meta.log
+      ? Array.from({ length: N_BANDS }, (_, i) => lo * Math.pow(hi / lo, i / (N_BANDS - 1)))
+      : Array.from({ length: N_BANDS }, (_, i) => lo + ((hi - lo) * i) / (N_BANDS - 1));
+    const color = meta.log
+      ? scaleSequentialLog(interp).domain([lo, hi])
+      : scaleSequential(interp).domain([lo, hi]);
+    return { lo, hi, thresholds, color, label: meta.label };
+  }, [grid, metric, palette, metricValues]);
 
   // ---- canvas contour rendering ----
   useEffect(() => {
@@ -127,11 +171,11 @@ export default function PorkchopPlot({ grid, computing, progress }: Props) {
     ctx.fillStyle = '#0a0a12';
     ctx.fillRect(M.l, M.t, plotW, plotH);
 
-    if (grid && scaleInfo) {
+    if (grid && scaleInfo && metricValues) {
       const { thresholds, color, hi } = scaleInfo;
       // replace NaN with a large sentinel so marching squares stays smooth;
       // the invalid diagonal is masked afterwards
-      const vals = Array.from(grid.totalDv, (v) => (Number.isFinite(v) ? v : hi * 8));
+      const vals = Array.from(metricValues, (v) => (Number.isFinite(v) ? v : hi * 8));
       const contourGen = d3Contours().size([nDep, nArr]).thresholds(thresholds);
       const bands = contourGen(vals);
 
@@ -198,7 +242,7 @@ export default function PorkchopPlot({ grid, computing, progress }: Props) {
     ctx.strokeStyle = '#1c1c2a';
     ctx.lineWidth = 1;
     ctx.strokeRect(M.l + 0.5, M.t + 0.5, plotW - 1, plotH - 1);
-  }, [grid, layout, scaleInfo, w, h]);
+  }, [grid, layout, scaleInfo, metricValues, w, h]);
 
   // ---- hover handling ----
   const onPointerMove = (e: React.PointerEvent) => {
@@ -247,9 +291,15 @@ export default function PorkchopPlot({ grid, computing, progress }: Props) {
 
   const legendGradient = useMemo(() => {
     if (!scaleInfo) return '';
-    const stops = Array.from({ length: 13 }, (_, i) => interpolateTurbo(i / 12)).join(', ');
+    const interp = PALETTES[palette];
+    const stops = Array.from({ length: 13 }, (_, i) => interp(i / 12)).join(', ');
     return `linear-gradient(to right, ${stops})`;
-  }, [scaleInfo]);
+  }, [scaleInfo, palette]);
+
+  const lockedPx =
+    locked && layout
+      ? { x: layout.xOfMs(locked.departMs), y: layout.yOfMs(locked.arriveMs) }
+      : null;
 
   const tooltipLeft = hover ? (hover.px > w - 240 ? hover.px - 218 : hover.px + 16) : 0;
   const tooltipTop = hover ? Math.max(8, hover.py - 118) : 0;
@@ -257,9 +307,12 @@ export default function PorkchopPlot({ grid, computing, progress }: Props) {
   return (
     <div
       ref={wrapRef}
-      className="relative h-full w-full"
+      className="relative h-full w-full cursor-crosshair"
       onPointerMove={onPointerMove}
       onPointerLeave={() => setHover(null)}
+      onClick={() => {
+        if (hover) onSelect(hover.departMs, hover.arriveMs);
+      }}
     >
       <canvas ref={canvasRef} className="absolute inset-0" style={{ width: w, height: h }} />
 
@@ -365,6 +418,30 @@ export default function PorkchopPlot({ grid, computing, progress }: Props) {
             </g>
           )}
 
+          {/* locked window marker */}
+          {lockedPx && (
+            <g>
+              <rect
+                x={lockedPx.x - 4.5}
+                y={lockedPx.y - 4.5}
+                width={9}
+                height={9}
+                fill="none"
+                stroke="#3ab0ff"
+                strokeWidth={1.6}
+                transform={`rotate(45 ${lockedPx.x} ${lockedPx.y})`}
+              />
+              <circle cx={lockedPx.x} cy={lockedPx.y} r={1.8} fill="#3ab0ff" />
+              <text
+                x={lockedPx.x + 10}
+                y={lockedPx.y + 13}
+                className="fill-accent font-mono text-[10px] tracking-widest"
+              >
+                LOCKED
+              </text>
+            </g>
+          )}
+
           {/* global minimum marker */}
           {min && (
             <g>
@@ -404,7 +481,8 @@ export default function PorkchopPlot({ grid, computing, progress }: Props) {
             ≥{fmtNum(scaleInfo.hi, 1)}
           </span>
           <span className="ml-1 font-mono text-[10px] tracking-wider text-text-lo">
-            Δv km/s · log
+            {scaleInfo.label}
+            {METRIC_META[metric].log ? ' · log' : ''}
           </span>
         </div>
       )}

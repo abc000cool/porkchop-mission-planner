@@ -84,6 +84,66 @@ export function gridDates(startMs: number, endMs: number, stepDays: number): num
  * completion fraction (for progress UI). Index convention matches d3-contour:
  * width = departDatesMs.length, values[iArr * width + iDep].
  */
+/**
+ * Distinct launch windows: local minima of the Δv surface, best-first,
+ * de-duplicated so type-I/type-II lobes of the same window both survive but
+ * near-identical cells don't.
+ */
+export function findTopWindows(grid: PorkchopGrid, k = 5): GridMinimum[] {
+  const nDep = grid.departDatesMs.length;
+  const nArr = grid.arriveDatesMs.length;
+  const dv = grid.totalDv;
+  const candidates: GridMinimum[] = [];
+
+  // interior cells only — a minimum on the grid edge is a truncated window,
+  // not a real one
+  for (let iArr = 1; iArr < nArr - 1; iArr++) {
+    for (let iDep = 1; iDep < nDep - 1; iDep++) {
+      const idx = iArr * nDep + iDep;
+      const v = dv[idx];
+      if (!Number.isFinite(v)) continue;
+      let isMin = true;
+      for (let dy = -1; dy <= 1 && isMin; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const jArr = iArr + dy;
+          const jDep = iDep + dx;
+          if (jArr < 0 || jArr >= nArr || jDep < 0 || jDep >= nDep) continue;
+          const nv = dv[jArr * nDep + jDep];
+          if (Number.isFinite(nv) && nv < v) {
+            isMin = false;
+            break;
+          }
+        }
+      }
+      if (!isMin) continue;
+      candidates.push({
+        iDep,
+        iArr,
+        departMs: grid.departDatesMs[iDep],
+        arriveMs: grid.arriveDatesMs[iArr],
+        totalDv: v,
+        depC3: grid.depC3[idx],
+        depVinf: grid.depVinf[idx],
+        arrVinf: grid.arrVinf[idx],
+        tofDays: grid.tofDays[idx],
+      });
+    }
+  }
+
+  candidates.sort((a, b) => a.totalDv - b.totalDv);
+  const picked: GridMinimum[] = [];
+  const MERGE = 45 * DAY_MS;
+  for (const c of candidates) {
+    if (picked.length >= k) break;
+    const dup = picked.some(
+      (p) => Math.abs(p.departMs - c.departMs) < MERGE && Math.abs(p.arriveMs - c.arriveMs) < MERGE,
+    );
+    if (!dup) picked.push(c);
+  }
+  return picked;
+}
+
 export function computePorkchopGrid(
   params: PorkchopParams,
   onRow?: (fraction: number) => void,

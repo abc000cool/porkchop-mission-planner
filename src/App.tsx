@@ -1,15 +1,17 @@
-import { useCallback, useMemo, useState } from 'react';
+import { lazy, Suspense, useCallback, useMemo, useRef, useState } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import ControlPanel from './components/ControlPanel';
-import PorkchopPlot from './components/PorkchopPlot';
+import MissionDetailPanel from './components/MissionDetailPanel';
+import PorkchopPlot, { type PaletteName, type PlotMetric } from './components/PorkchopPlot';
+import WindowsTable from './components/WindowsTable';
 import { usePorkchopGrid } from './hooks/usePorkchopGrid';
-import {
-  suggestArrivalRange,
-  suggestDepartureRange,
-  suggestStepDays,
-} from './lib/defaults';
+import { suggestArrivalRange, suggestDepartureRange, suggestStepDays } from './lib/defaults';
 import { fmtInt, fmtNum } from './lib/format';
+import { buildMission, type Mission } from './lib/mission';
 import type { PlanetId } from './lib/orbitalConstants';
-import { gridDates, type PorkchopParams } from './lib/porkchop';
+import { findTopWindows, gridDates, type PorkchopParams } from './lib/porkchop';
+
+const SolarSystem3D = lazy(() => import('./components/SolarSystem3D'));
 
 const NOW = Date.now();
 
@@ -32,8 +34,21 @@ function defaultConfig(dep: PlanetId, arr: PlanetId): MissionConfig {
   };
 }
 
+const METRIC_OPTIONS: { key: PlotMetric; label: string }[] = [
+  { key: 'dv', label: 'Δv' },
+  { key: 'tof', label: 'TOF' },
+  { key: 'c3', label: 'C3' },
+];
+
+const PALETTE_OPTIONS: PaletteName[] = ['turbo', 'viridis', 'inferno', 'plasma', 'cividis'];
+
 export default function App() {
   const [config, setConfig] = useState<MissionConfig>(() => defaultConfig('Earth', 'Mars'));
+  const [metric, setMetric] = useState<PlotMetric>('dv');
+  const [palette, setPalette] = useState<PaletteName>('turbo');
+  const [locked, setLocked] = useState<Mission | null>(null);
+  const [show3D, setShow3D] = useState(false);
+  const userClosed3D = useRef(false);
 
   const stepDays = suggestStepDays(
     config.departRange[0],
@@ -65,8 +80,23 @@ export default function App() {
     [params],
   );
 
+  const topWindows = useMemo(() => (grid ? findTopWindows(grid, 5) : []), [grid]);
+
+  const lockWindow = useCallback(
+    (departMs: number, arriveMs: number) => {
+      const mission = buildMission(config.departPlanet, config.arrivePlanet, departMs, arriveMs);
+      if (!mission) return;
+      setLocked(mission);
+      if (!userClosed3D.current) setShow3D(true);
+    },
+    [config.departPlanet, config.arrivePlanet],
+  );
+
   const onPlanets = useCallback((dep: PlanetId, arr: PlanetId) => {
     setConfig(defaultConfig(dep, arr));
+    setLocked(null);
+    setShow3D(false);
+    userClosed3D.current = false;
   }, []);
 
   const onDepartRange = useCallback((r: [number, number]) => {
@@ -117,8 +147,9 @@ export default function App() {
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1">
-        <aside className="w-[330px] shrink-0 overflow-y-auto border-r border-grid-line bg-panel p-4">
+      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+        {/* controls */}
+        <aside className="max-h-[45%] shrink-0 overflow-y-auto border-b border-grid-line bg-panel p-4 lg:max-h-none lg:w-[330px] lg:border-r lg:border-b-0">
           <ControlPanel
             departPlanet={config.departPlanet}
             arrivePlanet={config.arrivePlanet}
@@ -136,9 +167,120 @@ export default function App() {
             onArrivalAuto={onArrivalAuto}
           />
         </aside>
-        <main className="min-w-0 flex-1 p-2">
-          <PorkchopPlot grid={grid} computing={computing} progress={progress} />
+
+        {/* center: toolbar + plot + docked 3D */}
+        <main className="flex min-h-[420px] min-w-0 flex-1 flex-col p-2">
+          <div className="mb-2 flex items-center justify-between gap-3 px-1">
+            <div className="flex overflow-hidden rounded-md border border-grid-line">
+              {METRIC_OPTIONS.map((m) => (
+                <button
+                  key={m.key}
+                  type="button"
+                  onClick={() => setMetric(m.key)}
+                  className={`px-3 py-1 font-mono text-[11px] tracking-wider transition-colors ${
+                    metric === m.key
+                      ? 'bg-accent/15 text-accent'
+                      : 'text-text-lo hover:bg-panel-2 hover:text-text-mid'
+                  }`}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="hidden font-mono text-[10px] tracking-widest text-text-lo uppercase sm:inline">
+                palette
+              </span>
+              <select
+                value={palette}
+                onChange={(e) => setPalette(e.target.value as PaletteName)}
+                className="rounded-md border border-grid-line bg-panel-2 px-2 py-1 font-mono text-[11px] text-text-hi outline-none focus:border-accent"
+              >
+                {PALETTE_OPTIONS.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="min-h-0 flex-1">
+            <PorkchopPlot
+              grid={grid}
+              computing={computing}
+              progress={progress}
+              metric={metric}
+              palette={palette}
+              locked={locked ? { departMs: locked.departMs, arriveMs: locked.arriveMs } : null}
+              onSelect={lockWindow}
+            />
+          </div>
+
+          <AnimatePresence>
+            {show3D && locked && (
+              <motion.div
+                key="dock3d"
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: '46%', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.35, ease: [0.32, 0.72, 0, 1] }}
+                className="mt-2 shrink-0 overflow-hidden"
+              >
+                <Suspense
+                  fallback={
+                    <div className="flex h-full items-center justify-center rounded-md border border-grid-line bg-void font-mono text-xs tracking-[0.3em] text-text-lo">
+                      LOADING 3D SYSTEM…
+                    </div>
+                  }
+                >
+                  <SolarSystem3D
+                    mission={locked}
+                    onClose={() => {
+                      setShow3D(false);
+                      userClosed3D.current = true;
+                    }}
+                  />
+                </Suspense>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </main>
+
+        {/* right column */}
+        <aside className="shrink-0 space-y-3 overflow-y-auto border-t border-grid-line bg-void p-3 lg:w-[300px] lg:border-t-0 lg:border-l">
+          <WindowsTable
+            windows={topWindows}
+            lockedDepartMs={locked?.departMs ?? null}
+            lockedArriveMs={locked?.arriveMs ?? null}
+            onSelect={(win) => lockWindow(win.departMs, win.arriveMs)}
+          />
+          <AnimatePresence>
+            {locked && (
+              <MissionDetailPanel
+                mission={locked}
+                show3D={show3D}
+                onToggle3D={() => {
+                  setShow3D((s) => {
+                    userClosed3D.current = s;
+                    return !s;
+                  });
+                }}
+                onClear={() => {
+                  setLocked(null);
+                  setShow3D(false);
+                }}
+              />
+            )}
+          </AnimatePresence>
+          {!locked && (
+            <div className="rounded-md border border-dashed border-grid-line px-3 py-6 text-center font-mono text-[11px] leading-relaxed text-text-lo">
+              click any point on the plot
+              <br />
+              to lock in a launch window
+            </div>
+          )}
+        </aside>
       </div>
     </div>
   );
