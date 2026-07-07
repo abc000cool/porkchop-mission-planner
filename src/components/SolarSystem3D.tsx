@@ -1,7 +1,7 @@
-import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
-import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { Html, Line, OrbitControls, Stars, Trail, useTexture } from '@react-three/drei';
+import { useFrame, useThree } from '@react-three/fiber';
+import { Line, OrbitControls, Stars, Trail } from '@react-three/drei';
 import type { Line2 } from 'three-stdlib';
 import { Bloom, EffectComposer } from '@react-three/postprocessing';
 import { motion } from 'framer-motion';
@@ -10,153 +10,35 @@ import { RotateCcw, X } from 'lucide-react';
 import type { Mission } from '../lib/mission';
 import { PLANETS, type PlanetId } from '../lib/orbitalConstants';
 import { fmtDate, fmtNum } from '../lib/format';
-import type { Vec3 } from '../lib/vec';
-
-const AU = 149_597_870.7;
-
-const TEXTURES: Record<PlanetId, string> = {
-  Mercury: '/textures/2k_mercury.jpg',
-  Venus: '/textures/2k_venus_atmosphere.jpg',
-  Earth: '/textures/2k_earth_daymap.jpg',
-  Mars: '/textures/2k_mars.jpg',
-  Jupiter: '/textures/2k_jupiter.jpg',
-  Saturn: '/textures/2k_saturn.jpg',
-  Uranus: '/textures/2k_uranus.jpg',
-  Neptune: '/textures/2k_neptune.jpg',
-};
-
-/** Ecliptic J2000 km → three.js scene units (AU, Y-up). */
-const toScene = (v: Vec3): [number, number, number] => [v[0] / AU, v[2] / AU, -v[1] / AU];
-
-/** Linear interpolation along a scene-space path at fraction t ∈ [0, 1]. */
-function samplePath(path: [number, number, number][], t: number): [number, number, number] {
-  const f = Math.min(1, Math.max(0, t)) * (path.length - 1);
-  const i = Math.min(path.length - 2, Math.floor(f));
-  const u = f - i;
-  const a = path[i];
-  const b = path[i + 1];
-  return [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u];
-}
-
-interface SceneShared {
-  progress: { t: number };
-}
-
-/**
- * A WebGL failure (context loss, driver quirks with post-processing) must
- * never unmount the whole app. First failure retries without effects; a
- * second failure shows a fallback message.
- */
-class GLBoundary extends Component<
-  { onError: () => void; fallback: ReactNode; children: ReactNode },
-  { failed: boolean }
-> {
-  state = { failed: false };
-  static getDerivedStateFromError() {
-    return { failed: true };
-  }
-  componentDidCatch() {
-    this.props.onError();
-  }
-  render() {
-    return this.state.failed ? this.props.fallback : this.props.children;
-  }
-}
+import {
+  Planet,
+  planetSceneSize,
+  SafeCanvas,
+  samplePath,
+  Sun,
+  toScene,
+  useFxSafe,
+} from './three/shared';
 
 interface Props {
   mission: Mission;
   onClose: () => void;
 }
 
-function Sun({ size }: { size: number }) {
-  return (
-    <mesh>
-      <sphereGeometry args={[size, 48, 48]} />
-      <meshBasicMaterial color={[7, 4.6, 1.7]} toneMapped={false} />
-    </mesh>
-  );
-}
-
-function SaturnRings({ radius }: { radius: number }) {
-  const tex = useTexture('/textures/2k_saturn_ring_alpha.png');
-  const geo = useMemo(() => {
-    const inner = radius * 1.35;
-    const outer = radius * 2.25;
-    const g = new THREE.RingGeometry(inner, outer, 96, 1);
-    const pos = g.attributes.position;
-    const uv = g.attributes.uv;
-    for (let i = 0; i < pos.count; i++) {
-      const r = Math.hypot(pos.getX(i), pos.getY(i));
-      uv.setXY(i, (r - inner) / (outer - inner), 0.5);
-    }
-    return g;
-  }, [radius]);
-  return (
-    <mesh geometry={geo} rotation={[-Math.PI / 2 + 0.35, 0, 0]}>
-      <meshBasicMaterial map={tex} side={THREE.DoubleSide} transparent opacity={0.85} />
-    </mesh>
-  );
-}
-
-function Planet({
-  id,
-  size,
-  active,
-  label,
-}: {
-  id: PlanetId;
-  size: number;
-  active: boolean;
-  label?: string;
-}) {
-  const tex = useTexture(TEXTURES[id]);
-  const meshRef = useRef<THREE.Mesh>(null);
-  useFrame((_, dt) => {
-    if (meshRef.current) meshRef.current.rotation.y += dt * 0.15;
-  });
-  return (
-    <group>
-      <mesh ref={meshRef}>
-        <sphereGeometry args={[size, 40, 40]} />
-        <meshStandardMaterial map={tex} roughness={0.9} metalness={0} />
-      </mesh>
-      {id === 'Saturn' && <SaturnRings radius={size} />}
-      {active && (
-        <Html center distanceFactor={undefined} position={[0, size * 2.4, 0]}>
-          <div
-            className="pointer-events-none font-mono text-[10px] tracking-[0.25em] whitespace-nowrap uppercase"
-            style={{ color: PLANETS[id].color, textShadow: '0 0 8px rgba(0,0,0,0.9)' }}
-          >
-            {id}
-            {label && <span className="ml-2 text-text-mid normal-case">{label}</span>}
-          </div>
-        </Html>
-      )}
-    </group>
-  );
-}
-
 function Scene({
   mission,
   progress,
   effects,
-}: { mission: Mission; effects: boolean } & SceneShared) {
-  const { camera, gl } = useThree();
+}: {
+  mission: Mission;
+  effects: boolean;
+  progress: { t: number };
+}) {
+  const { camera } = useThree();
+  const fxSafe = useFxSafe();
 
-  // postprocessing's EffectComposer dereferences getContextAttributes(),
-  // which is null on some drivers/virtual GPUs — probe before enabling bloom
-  const fxSafe = useMemo(() => {
-    try {
-      return !!gl.getContext().getContextAttributes();
-    } catch {
-      return false;
-    }
-  }, [gl]);
-
-  const maxActiveAu = Math.max(
-    PLANETS[mission.departPlanet].semiMajorAxisAu,
-    PLANETS[mission.arrivePlanet].semiMajorAxisAu,
-  );
+  const routePlanets = mission.routePlanets ?? [mission.departPlanet, mission.arrivePlanet];
+  const maxActiveAu = Math.max(...routePlanets.map((p) => PLANETS[p].semiMajorAxisAu));
   const scale = maxActiveAu * 1.1;
 
   const shownPlanets = mission.planetIds;
@@ -215,20 +97,25 @@ function Scene({
     }
   });
 
-  const planetSize = (id: PlanetId) =>
-    scale * 0.02 * Math.cbrt(PLANETS[id].radiusKm / 6371) * (id === mission.departPlanet || id === mission.arrivePlanet ? 1.25 : 0.8);
-
   return (
     <>
       <ambientLight intensity={0.12} />
       <pointLight position={[0, 0, 0]} intensity={3.2} decay={0} color="#fff2dd" />
-      <Stars radius={scale * 30} depth={scale * 12} count={5000} factor={scale * 0.9} saturation={0} fade speed={0.3} />
+      <Stars
+        radius={scale * 30}
+        depth={scale * 12}
+        count={5000}
+        factor={scale * 0.9}
+        saturation={0}
+        fade
+        speed={0.3}
+      />
 
       <Sun size={scale * 0.045} />
 
       {/* orbit lines */}
       {shownPlanets.map((id) => {
-        const active = id === mission.departPlanet || id === mission.arrivePlanet;
+        const active = routePlanets.includes(id);
         return (
           <Line
             key={`orbit-${id}`}
@@ -243,7 +130,7 @@ function Scene({
 
       {/* planets */}
       {shownPlanets.map((id) => {
-        const active = id === mission.departPlanet || id === mission.arrivePlanet;
+        const active = routePlanets.includes(id);
         return (
           <group
             key={id}
@@ -251,15 +138,22 @@ function Scene({
               planetRefs.current[id] = g ?? undefined;
             }}
           >
-            <Planet id={id} size={planetSize(id)} active={active} />
+            <Planet id={id} size={planetSceneSize(id, scale, active)} active={active} />
           </group>
         );
       })}
 
       {/* ghost: arrival planet position at departure epoch */}
       <mesh position={samplePath(pathsScene[mission.arrivePlanet], 0)}>
-        <sphereGeometry args={[planetSize(mission.arrivePlanet) * 0.9, 20, 20]} />
-        <meshBasicMaterial color={PLANETS[mission.arrivePlanet].color} wireframe transparent opacity={0.18} />
+        <sphereGeometry
+          args={[planetSceneSize(mission.arrivePlanet, scale, true) * 0.9, 20, 20]}
+        />
+        <meshBasicMaterial
+          color={PLANETS[mission.arrivePlanet].color}
+          wireframe
+          transparent
+          opacity={0.18}
+        />
       </mesh>
 
       {/* transfer trajectory: draw-on via dash offset */}
@@ -277,7 +171,12 @@ function Scene({
 
       {/* spacecraft */}
       <group ref={craftRef}>
-        <Trail width={scale * 0.35} length={5} color={new THREE.Color(0.15, 0.65, 1.4)} attenuation={(t) => t * t}>
+        <Trail
+          width={scale * 0.35}
+          length={5}
+          color={new THREE.Color(0.15, 0.65, 1.4)}
+          attenuation={(t) => t * t}
+        >
           <mesh>
             <sphereGeometry args={[scale * 0.008, 16, 16]} />
             <meshBasicMaterial color={[1.2, 3.2, 6]} toneMapped={false} />
@@ -307,17 +206,17 @@ export default function SolarSystem3D({ mission, onClose }: Props) {
   const dateRef = useRef<HTMLSpanElement>(null);
   const sliderRef = useRef<HTMLInputElement>(null);
   const scrubbing = useRef(false);
-  // 2 = bloom effects, 1 = plain WebGL, 0 = unavailable on this GPU
-  const [glTier, setGlTier] = useState(2);
+
+  const routePlanets = mission.routePlanets ?? [mission.departPlanet, mission.arrivePlanet];
 
   const play = () => {
     tweenRef.current?.kill();
     progressRef.current.t = 0;
     tweenRef.current = gsap.to(progressRef.current, {
       t: 1,
-      duration: 3.4,
+      duration: routePlanets.length > 2 ? 6 : 3.4,
       delay: 0.7,
-      ease: 'power1.inOut',
+      ease: routePlanets.length > 2 ? 'none' : 'power1.inOut',
     });
   };
 
@@ -336,7 +235,8 @@ export default function SolarSystem3D({ mission, onClose }: Props) {
       const t = progressRef.current.t;
       const ms = mission.departMs + (mission.arriveMs - mission.departMs) * t;
       if (dateRef.current) dateRef.current.textContent = `T ${fmtDate(ms)}`;
-      if (sliderRef.current && !scrubbing.current) sliderRef.current.value = String(Math.round(t * 1000));
+      if (sliderRef.current && !scrubbing.current)
+        sliderRef.current.value = String(Math.round(t * 1000));
       raf = requestAnimationFrame(loop);
     };
     loop();
@@ -353,14 +253,13 @@ export default function SolarSystem3D({ mission, onClose }: Props) {
     >
       <div className="flex items-center justify-between border-b border-grid-line bg-panel px-4 py-2">
         <div className="font-mono text-[11px] tracking-[0.2em] text-text-mid uppercase">
-          Transfer trajectory ·{' '}
-          <span style={{ color: PLANETS[mission.departPlanet].color }}>
-            {mission.departPlanet}
-          </span>{' '}
-          →{' '}
-          <span style={{ color: PLANETS[mission.arrivePlanet].color }}>
-            {mission.arrivePlanet}
-          </span>
+          {routePlanets.length > 2 ? 'Grand tour' : 'Transfer trajectory'} ·{' '}
+          {routePlanets.map((p, i) => (
+            <span key={`${p}-${i}`}>
+              {i > 0 && ' → '}
+              <span style={{ color: PLANETS[p].color }}>{p}</span>
+            </span>
+          ))}
         </div>
         <button
           type="button"
@@ -373,33 +272,11 @@ export default function SolarSystem3D({ mission, onClose }: Props) {
       </div>
 
       <div className="relative min-h-0 flex-1">
-        {glTier === 0 ? (
-          <div className="flex h-full items-center justify-center font-mono text-[11px] tracking-[0.2em] text-text-lo">
-            3D VIEW UNAVAILABLE ON THIS GPU
-          </div>
-        ) : (
-          <GLBoundary
-            key={glTier}
-            onError={() => setGlTier((t) => Math.max(0, t - 1))}
-            fallback={
-              <div className="flex h-full items-center justify-center font-mono text-[11px] tracking-[0.2em] text-text-lo">
-                RESTARTING RENDERER…
-              </div>
-            }
-          >
-            <Canvas
-              dpr={[1, 1.5]}
-              camera={{ fov: 42, near: 0.005, far: 500 }}
-              gl={{ antialias: true, powerPreference: 'high-performance' }}
-              onCreated={({ gl }) => {
-                gl.domElement.addEventListener('webglcontextlost', (e) => e.preventDefault());
-              }}
-            >
-              <color attach="background" args={['#06060a']} />
-              <Scene mission={mission} progress={progressRef.current} effects={glTier === 2} />
-            </Canvas>
-          </GLBoundary>
-        )}
+        <SafeCanvas>
+          {(effects) => (
+            <Scene mission={mission} progress={progressRef.current} effects={effects} />
+          )}
+        </SafeCanvas>
 
         {/* HUD */}
         <div className="pointer-events-none absolute right-0 bottom-0 left-0 flex items-center gap-3 border-t border-grid-line/60 bg-void/75 px-4 py-2.5 backdrop-blur-sm">

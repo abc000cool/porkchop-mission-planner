@@ -4,13 +4,15 @@ import { ChevronDown } from 'lucide-react';
 import { PLANET_IDS, PLANETS, type PlanetId } from '../lib/orbitalConstants';
 
 interface Props {
-  label: string;
+  label?: string;
   value: PlanetId;
-  exclude?: PlanetId;
+  exclude?: PlanetId | PlanetId[];
+  compact?: boolean;
   onChange: (p: PlanetId) => void;
 }
 
-export default function PlanetSelect({ label, value, exclude, onChange }: Props) {
+export default function PlanetSelect({ label, value, exclude, compact, onChange }: Props) {
+  const excluded = Array.isArray(exclude) ? exclude : exclude ? [exclude] : [];
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -34,19 +36,25 @@ export default function PlanetSelect({ label, value, exclude, onChange }: Props)
 
   return (
     <div ref={rootRef} className="relative flex-1">
-      <span className="mb-1 block text-[11px] font-medium tracking-[0.14em] text-text-mid uppercase">
-        {label}
-      </span>
+      {label && (
+        <span className="mb-1 block text-[11px] font-medium tracking-[0.14em] text-text-mid uppercase">
+          {label}
+        </span>
+      )}
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center gap-2 rounded-md border border-grid-line bg-panel-2 px-3 py-2 text-left transition-colors hover:border-accent-dim focus:border-accent focus:outline-none"
+        className={`flex w-full items-center gap-2 rounded-md border border-grid-line bg-panel-2 text-left transition-colors hover:border-accent-dim focus:border-accent focus:outline-none ${
+          compact ? 'px-2 py-1' : 'px-3 py-2'
+        }`}
       >
         <span
           className="h-3 w-3 shrink-0 rounded-full"
           style={{ background: planet.color, boxShadow: `0 0 8px ${planet.color}` }}
         />
-        <span className="flex-1 text-sm font-medium text-text-hi">{planet.id}</span>
+        <span className={`flex-1 font-medium text-text-hi ${compact ? 'text-xs' : 'text-sm'}`}>
+          {planet.id}
+        </span>
         <ChevronDown
           size={14}
           className={`text-text-lo transition-transform ${open ? 'rotate-180' : ''}`}
@@ -64,7 +72,7 @@ export default function PlanetSelect({ label, value, exclude, onChange }: Props)
           >
             {PLANET_IDS.map((id) => {
               const p = PLANETS[id];
-              const disabled = id === exclude;
+              const disabled = excluded.includes(id);
               return (
                 <li key={id}>
                   <button
@@ -89,7 +97,7 @@ export default function PlanetSelect({ label, value, exclude, onChange }: Props)
                     {p.id}
                     {disabled && (
                       <span className="ml-auto text-[10px] tracking-wider text-text-lo/60 uppercase">
-                        origin
+                        in use
                       </span>
                     )}
                   </button>

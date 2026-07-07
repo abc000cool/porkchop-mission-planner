@@ -1,13 +1,16 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Check, Download, History, Link2 } from 'lucide-react';
+import { Check, Clock, Download, History, Link2 } from 'lucide-react';
 import ControlPanel from './components/ControlPanel';
 import MissionDesigner from './components/MissionDesigner';
 import MissionDetailPanel from './components/MissionDetailPanel';
 import PorkchopPlot, { type PaletteName, type PlotMetric } from './components/PorkchopPlot';
 import RocketPayloadMapper from './components/RocketPayloadMapper';
+import TourControls from './components/TourControls';
+import TourPanel from './components/TourPanel';
 import WindowsTable from './components/WindowsTable';
 import { usePorkchopGrid } from './hooks/usePorkchopGrid';
+import { useTourOptimizer } from './hooks/useTourOptimizer';
 import { downloadText, gridToCsv } from './lib/csv';
 import { suggestArrivalRange, suggestDepartureRange, suggestStepDays } from './lib/defaults';
 import { missionDifficulty } from './lib/difficulty';
@@ -18,8 +21,12 @@ import { PLANETS, type PlanetId } from './lib/orbitalConstants';
 import { decodeShareState, encodeShareState } from './lib/permalink';
 import { findTopWindows, gridDates, type PorkchopParams } from './lib/porkchop';
 import { ROCKET_BY_ID } from './lib/rocketData';
+import { buildTourMission, evaluateTour, TOUR_PRESETS, type TourFinish } from './lib/tour';
 
 const SolarSystem3D = lazy(() => import('./components/SolarSystem3D'));
+const TimeLapsePanel = lazy(() => import('./components/TimeLapsePanel'));
+
+type AppMode = 'porkchop' | 'tour';
 
 const NOW = Date.now();
 const URL_STATE = typeof window !== 'undefined' ? decodeShareState(window.location.search) : null;
@@ -85,8 +92,66 @@ export default function App() {
   const [showHistory, setShowHistory] = useState(true);
   const [locked, setLocked] = useState<Mission | null>(null);
   const [show3D, setShow3D] = useState(false);
+  const [showLapse, setShowLapse] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
   const userClosed3D = useRef(false);
+
+  // ---- Grand Tour mode ----
+  const [appMode, setAppMode] = useState<AppMode>('porkchop');
+  const [tourRoute, setTourRoute] = useState<PlanetId[]>(TOUR_PRESETS[0].route);
+  const [tourDepartMs, setTourDepartMs] = useState(() => Date.parse(TOUR_PRESETS[0].departIso));
+  const [tourLegTofs, setTourLegTofs] = useState<number[]>(TOUR_PRESETS[0].legTofDays);
+  const [tourSlack, setTourSlack] = useState(180);
+  const [tourFinish, setTourFinish] = useState<TourFinish>(TOUR_PRESETS[0].finish);
+  const tourOpt = useTourOptimizer();
+
+  const tourEval = useMemo(
+    () => evaluateTour(tourRoute, tourDepartMs, tourLegTofs, { finish: tourFinish }),
+    [tourRoute, tourDepartMs, tourLegTofs, tourFinish],
+  );
+
+  const [tourMission, setTourMission] = useState<Mission | null>(null);
+  useEffect(() => {
+    if (appMode !== 'tour') return;
+    if (!tourEval) {
+      setTourMission(null);
+      return;
+    }
+    const id = setTimeout(() => setTourMission(buildTourMission(tourEval)), 300);
+    return () => clearTimeout(id);
+  }, [tourEval, appMode]);
+
+  const onTourPreset = useCallback((id: string) => {
+    const p = TOUR_PRESETS.find((x) => x.id === id);
+    if (!p) return;
+    setTourRoute(p.route);
+    setTourDepartMs(Date.parse(p.departIso));
+    setTourLegTofs(p.legTofDays);
+    setTourFinish(p.finish);
+  }, []);
+
+  const onTourRoute = useCallback((route: PlanetId[], legTofDays: number[]) => {
+    setTourRoute(route);
+    setTourLegTofs(legTofDays);
+    // aerocapture finish only makes sense with an atmosphere at the target
+    setTourFinish((f) =>
+      f === 'aerocapture' && !PLANETS[route[route.length - 1]].hasAtmosphere ? 'capture' : f,
+    );
+  }, []);
+
+  const onTourOptimize = useCallback(async () => {
+    const res = await tourOpt.optimize({
+      route: tourRoute,
+      departMs: tourDepartMs,
+      legTofDays: tourLegTofs,
+      departSlackDays: tourSlack,
+      finish: tourFinish,
+    });
+    if (res) {
+      setTourDepartMs(res.departMs);
+      setTourLegTofs(res.legTofDays);
+    }
+  }, [tourOpt, tourRoute, tourDepartMs, tourLegTofs, tourSlack, tourFinish]);
 
   const stepDays = suggestStepDays(
     config.departRange[0],
@@ -149,7 +214,10 @@ export default function App() {
       );
       if (!mission) return;
       setLocked(mission);
-      if (!userClosed3D.current) setShow3D(true);
+      if (!userClosed3D.current) {
+        setShow3D(true);
+        setShowLapse(false);
+      }
     },
     [config.departPlanet, config.arrivePlanet, aerocapture, prograde, maxRevs],
   );
@@ -298,25 +366,63 @@ export default function App() {
           <h1 className="font-mono text-sm font-bold tracking-[0.3em] text-text-hi">
             PORKCHOP<span className="text-accent">_</span>
           </h1>
-          <span className="hidden text-[11px] tracking-[0.18em] text-text-lo uppercase sm:block">
+          <span className="hidden text-[11px] tracking-[0.18em] text-text-lo uppercase md:block">
             Interplanetary Mission Planner
           </span>
         </div>
+        <div className="flex overflow-hidden rounded-md border border-grid-line">
+          {(
+            [
+              ['porkchop', 'PORKCHOP'],
+              ['tour', 'GRAND TOUR'],
+            ] as const
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setAppMode(key)}
+              className={`px-3 py-1 font-mono text-[11px] tracking-[0.15em] transition-colors ${
+                appMode === key
+                  ? 'bg-accent/15 text-accent'
+                  : 'text-text-lo hover:bg-panel-2 hover:text-text-mid'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
         <div className="flex items-center gap-3 font-mono text-[11px] tracking-wider text-text-mid">
-          <span>
-            <span className="text-accent">{config.departPlanet.toUpperCase()}</span>
-            <span className="mx-1.5 text-text-lo">→</span>
-            <span className="text-amber">{config.arrivePlanet.toUpperCase()}</span>
-          </span>
-          {grid && !computing && (
-            <span className="hidden text-text-lo lg:inline">
-              {fmtInt(gridDims[0] * gridDims[1])} SOLUTIONS · {fmtNum(elapsedMs / 1000, 1)}
-              &thinsp;s
+          {appMode === 'porkchop' ? (
+            <>
+              <span>
+                <span className="text-accent">{config.departPlanet.toUpperCase()}</span>
+                <span className="mx-1.5 text-text-lo">→</span>
+                <span className="text-amber">{config.arrivePlanet.toUpperCase()}</span>
+              </span>
+              {grid && !computing && (
+                <span className="hidden text-text-lo lg:inline">
+                  {fmtInt(gridDims[0] * gridDims[1])} SOLUTIONS · {fmtNum(elapsedMs / 1000, 1)}
+                  &thinsp;s
+                </span>
+              )}
+            </>
+          ) : (
+            <span className="hidden sm:inline">
+              {tourRoute.map((p, i) => (
+                <span key={`${p}-${i}`}>
+                  {i > 0 && <span className="mx-1 text-text-lo">→</span>}
+                  <span style={{ color: PLANETS[p].color }}>{p.toUpperCase().slice(0, 3)}</span>
+                </span>
+              ))}
+              {tourEval && (
+                <span className="ml-3 text-amber">Δv {fmtNum(tourEval.dvTotal)} km/s</span>
+              )}
             </span>
           )}
         </div>
       </header>
 
+      {appMode === 'porkchop' ? (
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         {/* controls */}
         <aside className="max-h-[45%] shrink-0 overflow-y-auto border-b border-grid-line bg-panel p-4 lg:max-h-none lg:w-[330px] lg:border-r lg:border-b-0">
@@ -379,6 +485,23 @@ export default function App() {
                   <History size={12} /> HISTORY
                 </button>
               )}
+              <button
+                type="button"
+                onClick={() => {
+                  setShowLapse((s) => {
+                    if (!s) setShow3D(false);
+                    return !s;
+                  });
+                }}
+                title="Animate planet geometry across one synodic period"
+                className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 font-mono text-[11px] tracking-wider transition-colors ${
+                  showLapse
+                    ? 'border-accent/50 bg-accent/10 text-accent'
+                    : 'border-grid-line text-text-lo hover:text-text-mid'
+                }`}
+              >
+                <Clock size={12} /> TIME-LAPSE
+              </button>
             </div>
             <div className="flex items-center gap-2">
               <select
@@ -427,9 +550,9 @@ export default function App() {
           </div>
 
           <AnimatePresence>
-            {show3D && locked && (
+            {((show3D && locked) || showLapse) && (
               <motion.div
-                key="dock3d"
+                key={showLapse ? 'docklapse' : 'dock3d'}
                 initial={{ height: 0, opacity: 0 }}
                 animate={{ height: '46%', opacity: 1 }}
                 exit={{ height: 0, opacity: 0 }}
@@ -443,13 +566,25 @@ export default function App() {
                     </div>
                   }
                 >
-                  <SolarSystem3D
-                    mission={locked}
-                    onClose={() => {
-                      setShow3D(false);
-                      userClosed3D.current = true;
-                    }}
-                  />
+                  {showLapse ? (
+                    <TimeLapsePanel
+                      departPlanet={config.departPlanet}
+                      arrivePlanet={config.arrivePlanet}
+                      startMs={config.departRange[0]}
+                      grid={grid}
+                      onClose={() => setShowLapse(false)}
+                    />
+                  ) : (
+                    locked && (
+                      <SolarSystem3D
+                        mission={locked}
+                        onClose={() => {
+                          setShow3D(false);
+                          userClosed3D.current = true;
+                        }}
+                      />
+                    )
+                  )}
                 </Suspense>
               </motion.div>
             )}
@@ -500,6 +635,55 @@ export default function App() {
           <MissionDesigner grid={grid} onLock={lockWindow} />
         </aside>
       </div>
+      ) : (
+      /* ---- Grand Tour mode ---- */
+      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+        <aside className="max-h-[45%] shrink-0 overflow-y-auto border-b border-grid-line bg-panel p-4 lg:max-h-none lg:w-[330px] lg:border-r lg:border-b-0">
+          <TourControls
+            route={tourRoute}
+            departMs={tourDepartMs}
+            legTofDays={tourLegTofs}
+            slackDays={tourSlack}
+            finish={tourFinish}
+            optimizing={tourOpt.running}
+            optEvals={tourOpt.evals}
+            optBestDv={tourOpt.bestDv}
+            onRoute={onTourRoute}
+            onDepartMs={setTourDepartMs}
+            onLegTofDays={setTourLegTofs}
+            onSlackDays={setTourSlack}
+            onFinish={setTourFinish}
+            onOptimize={onTourOptimize}
+            onCancelOptimize={tourOpt.cancel}
+            onPreset={onTourPreset}
+          />
+        </aside>
+
+        <main className="flex min-h-[420px] min-w-0 flex-1 flex-col p-2">
+          <div className="min-h-0 flex-1">
+            {tourMission ? (
+              <Suspense
+                fallback={
+                  <div className="flex h-full items-center justify-center rounded-md border border-grid-line bg-void font-mono text-xs tracking-[0.3em] text-text-lo">
+                    LOADING 3D SYSTEM…
+                  </div>
+                }
+              >
+                <SolarSystem3D mission={tourMission} onClose={() => setAppMode('porkchop')} />
+              </Suspense>
+            ) : (
+              <div className="flex h-full items-center justify-center rounded-md border border-grid-line bg-void font-mono text-xs tracking-[0.3em] text-text-lo">
+                {tourEval ? 'ASSEMBLING TOUR…' : 'NO FEASIBLE TRAJECTORY — ADJUST LEG TIMES'}
+              </div>
+            )}
+          </div>
+        </main>
+
+        <aside className="shrink-0 space-y-3 overflow-y-auto border-t border-grid-line bg-void p-3 lg:w-[300px] lg:border-t-0 lg:border-l">
+          <TourPanel evaluation={tourEval} />
+        </aside>
+      </div>
+      )}
     </div>
   );
 }

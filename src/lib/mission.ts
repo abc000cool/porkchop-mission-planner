@@ -33,6 +33,10 @@ export interface Mission {
   planetPaths: Partial<Record<PlanetId, Vec3[]>>;
   /** Full orbit loops (one period) for orbit rendering, km. */
   orbitLoops: Partial<Record<PlanetId, Vec3[]>>;
+  /** Full route including flyby planets (grand tours); defaults to [depart, arrive]. */
+  routePlanets?: PlanetId[];
+  /** Flyby encounters along the route (grand tours). */
+  flybys?: { planet: PlanetId; ms: number }[];
 }
 
 export const TRAJECTORY_SAMPLES = 160;
