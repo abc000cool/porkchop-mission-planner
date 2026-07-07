@@ -48,6 +48,52 @@ export function orbitLoop(planet: PlanetId, epochMs: number, samples = ORBIT_SAM
   return pts;
 }
 
+export interface TradePoint {
+  offsetDays: number;
+  arriveMs: number;
+  tofDays: number;
+  depC3: number;
+  arrVinf: number;
+  dvTotal: number;
+}
+
+/**
+ * C3 vs arrival-v∞ trade study: hold the departure date, slide the arrival
+ * date. Shows how paying more launch energy buys a gentler (or harsher)
+ * arrival.
+ */
+export function arrivalTradeTable(
+  m: Mission,
+  aerocapture = false,
+  offsets: number[] = [-30, -15, 0, 15, 30],
+): TradePoint[] {
+  const out: TradePoint[] = [];
+  for (const off of offsets) {
+    const arriveMs = m.arriveMs + off * DAY_MS;
+    const tofDays = (arriveMs - m.departMs) / DAY_MS;
+    if (tofDays <= 5) continue;
+    const arrState = planetState(m.arrivePlanet, arriveMs);
+    const sols = solveLambert(m.depState.r, arrState.r, tofDays * DAY_S, MU_SUN, {
+      prograde: true,
+      maxRevs: 0,
+    });
+    if (sols.length === 0) continue;
+    const depVinf = norm(sub(sols[0].v1, m.depState.v));
+    const arrVinf = norm(sub(sols[0].v2, arrState.v));
+    out.push({
+      offsetDays: off,
+      arriveMs,
+      tofDays,
+      depC3: depVinf * depVinf,
+      arrVinf,
+      dvTotal:
+        departureBurnDv(depVinf, m.departPlanet) +
+        captureBurnDv(arrVinf, m.arrivePlanet, aerocapture),
+    });
+  }
+  return out;
+}
+
 export function buildMission(
   departPlanet: PlanetId,
   arrivePlanet: PlanetId,

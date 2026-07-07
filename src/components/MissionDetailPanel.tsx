@@ -1,12 +1,14 @@
+import { useMemo } from 'react';
 import { motion } from 'framer-motion';
 import { Box, Lock, X } from 'lucide-react';
-import type { Mission } from '../lib/mission';
+import { arrivalTradeTable, type Mission } from '../lib/mission';
 import { PLANETS } from '../lib/orbitalConstants';
 import { fmtDate, fmtNum } from '../lib/format';
 import TrajectoryDiagram2D from './TrajectoryDiagram2D';
 
 interface Props {
   mission: Mission;
+  aerocapture: boolean;
   show3D: boolean;
   onToggle3D: () => void;
   onClear: () => void;
@@ -45,9 +47,16 @@ function BurnBar({
   );
 }
 
-export default function MissionDetailPanel({ mission, show3D, onToggle3D, onClear }: Props) {
+export default function MissionDetailPanel({
+  mission,
+  aerocapture,
+  show3D,
+  onToggle3D,
+  onClear,
+}: Props) {
   const dep = PLANETS[mission.departPlanet];
   const arr = PLANETS[mission.arrivePlanet];
+  const trade = useMemo(() => arrivalTradeTable(mission, aerocapture), [mission, aerocapture]);
   const captureNote =
     mission.dvCapture === 0
       ? 'aerocapture — atmosphere brakes for free'
@@ -112,6 +121,42 @@ export default function MissionDetailPanel({ mission, show3D, onToggle3D, onClea
           <span className="font-medium text-amber">{fmtNum(mission.dvTotal)} km/s</span>
         </div>
       </div>
+
+      {trade.length > 1 && (
+        <div className="mt-3">
+          <div className="text-[10px] tracking-[0.14em] text-text-lo uppercase">
+            arrival trade — C3 vs v∞
+          </div>
+          <table className="mt-1 w-full font-mono text-[10px]">
+            <thead>
+              <tr className="text-left text-text-lo">
+                <th className="font-normal">arrive</th>
+                <th className="text-right font-normal">C3</th>
+                <th className="text-right font-normal">v∞</th>
+                <th className="text-right font-normal">Δv</th>
+              </tr>
+            </thead>
+            <tbody>
+              {trade.map((t) => (
+                <tr
+                  key={t.offsetDays}
+                  className={`border-t border-grid-line/40 ${
+                    t.offsetDays === 0 ? 'text-accent' : 'text-text-hi'
+                  }`}
+                >
+                  <td className="py-0.5">
+                    {t.offsetDays === 0 ? '● ' : ''}
+                    {t.offsetDays > 0 ? `+${t.offsetDays}d` : t.offsetDays < 0 ? `${t.offsetDays}d` : 'locked'}
+                  </td>
+                  <td className="py-0.5 text-right">{fmtNum(t.depC3, 1)}</td>
+                  <td className="py-0.5 text-right">{fmtNum(t.arrVinf, 2)}</td>
+                  <td className="py-0.5 text-right">{fmtNum(t.dvTotal, 2)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       <button
         type="button"

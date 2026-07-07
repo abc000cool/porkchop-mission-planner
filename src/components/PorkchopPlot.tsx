@@ -30,6 +30,12 @@ const METRIC_META: Record<PlotMetric, { label: string; log: boolean; clampQ: num
   c3: { label: 'C3 km²/s²', log: true, clampQ: 0.9 },
 };
 
+export interface HistoryDot {
+  name: string;
+  departMs: number;
+  arriveMs: number;
+}
+
 interface Props {
   grid: PorkchopGrid | null;
   computing: boolean;
@@ -37,6 +43,7 @@ interface Props {
   metric: PlotMetric;
   palette: PaletteName;
   locked: { departMs: number; arriveMs: number } | null;
+  historyDots: HistoryDot[];
   onSelect: (departMs: number, arriveMs: number) => void;
 }
 
@@ -101,6 +108,7 @@ export default function PorkchopPlot({
   metric,
   palette,
   locked,
+  historyDots,
   onSelect,
 }: Props) {
   const [wrapRef, { w, h }] = useElementSize();
@@ -417,6 +425,46 @@ export default function PorkchopPlot({
               <circle cx={hover.px} cy={hover.py} r={4} fill="none" stroke="#3ab0ff" strokeWidth={1.5} />
             </g>
           )}
+
+          {/* historical missions */}
+          {layout &&
+            historyDots
+              .filter(
+                (d) =>
+                  d.departMs >= layout.dep0 &&
+                  d.departMs <= layout.dep1 &&
+                  d.arriveMs >= layout.arr0 &&
+                  d.arriveMs <= layout.arr1,
+              )
+              .map((d) => {
+                const x = layout.xOfMs(d.departMs);
+                const y = layout.yOfMs(d.arriveMs);
+                return (
+                  <g
+                    key={d.name}
+                    className="pointer-events-auto cursor-pointer"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onSelect(d.departMs, d.arriveMs);
+                    }}
+                  >
+                    <title>
+                      {d.name} — launched {fmtDate(d.departMs)}, arrived {fmtDate(d.arriveMs)}.
+                      Click to lock.
+                    </title>
+                    <circle cx={x} cy={y} r={7} fill="transparent" />
+                    <circle
+                      cx={x}
+                      cy={y}
+                      r={3}
+                      fill="#e8ecf4"
+                      stroke="#06060a"
+                      strokeWidth={1.2}
+                    />
+                    <circle cx={x} cy={y} r={5} fill="none" stroke="#e8ecf4" strokeOpacity={0.5} />
+                  </g>
+                );
+              })}
 
           {/* locked window marker */}
           {lockedPx && (

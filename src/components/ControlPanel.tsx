@@ -1,9 +1,10 @@
 import { motion } from 'framer-motion';
-import { ArrowDownUp, Crosshair, Grid3X3 } from 'lucide-react';
+import { ArrowDownUp, Crosshair, Grid3X3, Wind } from 'lucide-react';
 import DualDateSlider from './DualDateSlider';
 import PlanetSelect from './PlanetSelect';
-import { DAY_MS, type PlanetId } from '../lib/orbitalConstants';
+import { DAY_MS, PLANETS, type PlanetId } from '../lib/orbitalConstants';
 import type { GridMinimum } from '../lib/porkchop';
+import type { Difficulty } from '../lib/difficulty';
 import { hohmannTofDays } from '../lib/defaults';
 import { fmtDate, fmtInt, fmtNum } from '../lib/format';
 
@@ -13,15 +14,18 @@ interface Props {
   departRange: [number, number];
   arriveRange: [number, number];
   arrivalAuto: boolean;
+  aerocapture: boolean;
   stepDays: number;
   gridDims: [number, number];
   computing: boolean;
   progress: number;
   minimum: GridMinimum | null;
+  difficulty: Difficulty | null;
   onPlanets: (dep: PlanetId, arr: PlanetId) => void;
   onDepartRange: (r: [number, number]) => void;
   onArriveRange: (r: [number, number]) => void;
   onArrivalAuto: (auto: boolean) => void;
+  onAerocapture: (on: boolean) => void;
 }
 
 const NOW = Date.now();
@@ -32,16 +36,20 @@ export default function ControlPanel({
   departRange,
   arriveRange,
   arrivalAuto,
+  aerocapture,
   stepDays,
   gridDims,
   computing,
   progress,
   minimum,
+  difficulty,
   onPlanets,
   onDepartRange,
   onArriveRange,
   onArrivalAuto,
+  onAerocapture,
 }: Props) {
+  const canAerocapture = PLANETS[arrivePlanet].hasAtmosphere;
   const tH = hohmannTofDays(departPlanet, arrivePlanet);
   const depSliderMin = NOW - 400 * DAY_MS;
   const depSliderMax = NOW + 8 * 365.25 * DAY_MS;
@@ -112,6 +120,40 @@ export default function ControlPanel({
         </div>
       </section>
 
+      {/* Arrival mode */}
+      {canAerocapture && (
+        <section className="flex items-center justify-between rounded-md border border-grid-line bg-panel-2/60 px-3 py-2">
+          <div className="flex items-center gap-2">
+            <Wind size={13} className={aerocapture ? 'text-accent' : 'text-text-lo'} />
+            <div>
+              <div className="text-[11px] font-medium text-text-hi">Aerocapture</div>
+              <div className="text-[10px] text-text-lo">
+                {aerocapture
+                  ? `${arrivePlanet}'s atmosphere brakes — capture Δv ≈ 0`
+                  : 'propulsive capture at arrival'}
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={aerocapture}
+            onClick={() => onAerocapture(!aerocapture)}
+            className={`relative h-5 w-9 shrink-0 rounded-full border transition-colors ${
+              aerocapture ? 'border-accent/70 bg-accent/30' : 'border-grid-line bg-panel'
+            }`}
+          >
+            <span
+              className={`absolute top-1/2 h-3.5 w-3.5 -translate-y-1/2 rounded-full transition-all ${
+                aerocapture
+                  ? 'left-[18px] bg-accent shadow-[0_0_8px_rgba(58,176,255,0.8)]'
+                  : 'left-[3px] bg-text-lo'
+              }`}
+            />
+          </button>
+        </section>
+      )}
+
       {/* Grid stats */}
       <section className="rounded-md border border-grid-line bg-panel-2/60 px-3 py-2.5">
         <div className="flex items-center gap-2 text-[11px] tracking-[0.14em] text-text-mid uppercase">
@@ -164,6 +206,27 @@ export default function ControlPanel({
             <span className="text-right text-text-hi">{fmtNum(minimum.arrVinf)} km/s</span>
             <span className="text-text-lo">flight time</span>
             <span className="text-right text-text-hi">{Math.round(minimum.tofDays)} days</span>
+            {difficulty && (
+              <>
+                <span className="text-text-lo">window width</span>
+                <span className="text-right text-text-hi">
+                  ~{Math.round(difficulty.windowDays)} days
+                </span>
+                <span className="text-text-lo">difficulty</span>
+                <span className="text-right">
+                  <span
+                    className="rounded-full border px-1.5 py-px text-[10px] tracking-wider uppercase"
+                    style={{
+                      color: difficulty.color,
+                      borderColor: `${difficulty.color}66`,
+                      background: `${difficulty.color}14`,
+                    }}
+                  >
+                    {difficulty.score} · {difficulty.label}
+                  </span>
+                </span>
+              </>
+            )}
           </div>
         ) : (
           <p className="mt-1.5 font-mono text-[11px] text-text-lo">

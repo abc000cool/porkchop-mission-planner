@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import * as THREE from 'three';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Html, Line, OrbitControls, Stars, Trail, useTexture } from '@react-three/drei';
@@ -40,6 +40,27 @@ function samplePath(path: [number, number, number][], t: number): [number, numbe
 
 interface SceneShared {
   progress: { t: number };
+}
+
+/**
+ * A WebGL failure (context loss, driver quirks with post-processing) must
+ * never unmount the whole app. First failure retries without effects; a
+ * second failure shows a fallback message.
+ */
+class GLBoundary extends Component<
+  { onError: () => void; fallback: ReactNode; children: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch() {
+    this.props.onError();
+  }
+  render() {
+    return this.state.failed ? this.props.fallback : this.props.children;
+  }
 }
 
 interface Props {
@@ -115,7 +136,11 @@ function Planet({
   );
 }
 
-function Scene({ mission, progress }: { mission: Mission } & SceneShared) {
+function Scene({
+  mission,
+  progress,
+  effects,
+}: { mission: Mission; effects: boolean } & SceneShared) {
   const { camera } = useThree();
 
   const maxActiveAu = Math.max(
@@ -250,9 +275,11 @@ function Scene({ mission, progress }: { mission: Mission } & SceneShared) {
         </Trail>
       </group>
 
-      <EffectComposer multisampling={4}>
-        <Bloom intensity={1.15} luminanceThreshold={1} mipmapBlur />
-      </EffectComposer>
+      {effects && (
+        <EffectComposer multisampling={0}>
+          <Bloom intensity={1.15} luminanceThreshold={1} mipmapBlur />
+        </EffectComposer>
+      )}
 
       <OrbitControls
         makeDefault
@@ -270,6 +297,8 @@ export default function SolarSystem3D({ mission, onClose }: Props) {
   const dateRef = useRef<HTMLSpanElement>(null);
   const sliderRef = useRef<HTMLInputElement>(null);
   const scrubbing = useRef(false);
+  // 2 = bloom effects, 1 = plain WebGL, 0 = unavailable on this GPU
+  const [glTier, setGlTier] = useState(2);
 
   const play = () => {
     tweenRef.current?.kill();
@@ -334,10 +363,33 @@ export default function SolarSystem3D({ mission, onClose }: Props) {
       </div>
 
       <div className="relative min-h-0 flex-1">
-        <Canvas dpr={[1, 2]} camera={{ fov: 42, near: 0.005, far: 500 }} gl={{ antialias: true }}>
-          <color attach="background" args={['#06060a']} />
-          <Scene mission={mission} progress={progressRef.current} />
-        </Canvas>
+        {glTier === 0 ? (
+          <div className="flex h-full items-center justify-center font-mono text-[11px] tracking-[0.2em] text-text-lo">
+            3D VIEW UNAVAILABLE ON THIS GPU
+          </div>
+        ) : (
+          <GLBoundary
+            key={glTier}
+            onError={() => setGlTier((t) => Math.max(0, t - 1))}
+            fallback={
+              <div className="flex h-full items-center justify-center font-mono text-[11px] tracking-[0.2em] text-text-lo">
+                RESTARTING RENDERER…
+              </div>
+            }
+          >
+            <Canvas
+              dpr={[1, 1.5]}
+              camera={{ fov: 42, near: 0.005, far: 500 }}
+              gl={{ antialias: true, powerPreference: 'high-performance' }}
+              onCreated={({ gl }) => {
+                gl.domElement.addEventListener('webglcontextlost', (e) => e.preventDefault());
+              }}
+            >
+              <color attach="background" args={['#06060a']} />
+              <Scene mission={mission} progress={progressRef.current} effects={glTier === 2} />
+            </Canvas>
+          </GLBoundary>
+        )}
 
         {/* HUD */}
         <div className="pointer-events-none absolute right-0 bottom-0 left-0 flex items-center gap-3 border-t border-grid-line/60 bg-void/75 px-4 py-2.5 backdrop-blur-sm">
