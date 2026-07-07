@@ -2,6 +2,7 @@
 
 import { isoDate } from './format';
 import { PLANET_IDS, type PlanetId } from './orbitalConstants';
+import type { TourFinish } from './tour';
 
 export interface ShareState {
   departPlanet: PlanetId;
@@ -17,12 +18,25 @@ export interface ShareState {
   maxRevs: number;
   lockedDepartMs: number | null;
   lockedArriveMs: number | null;
+  // grand-tour mode (all present when mode === 'tour')
+  mode?: 'porkchop' | 'tour';
+  tourRoute?: PlanetId[];
+  tourDepartMs?: number;
+  tourLegTofs?: number[];
+  tourFinish?: TourFinish;
 }
 
 export function encodeShareState(s: ShareState): string {
   const p = new URLSearchParams();
   p.set('from', s.departPlanet);
   p.set('to', s.arrivePlanet);
+  if (s.mode === 'tour' && s.tourRoute && s.tourLegTofs && s.tourDepartMs) {
+    p.set('mode', 'tour');
+    p.set('tr', s.tourRoute.join('.'));
+    p.set('td', isoDate(s.tourDepartMs));
+    p.set('tt', s.tourLegTofs.map((t) => Math.round(t)).join('.'));
+    if (s.tourFinish && s.tourFinish !== 'capture') p.set('tf', s.tourFinish);
+  }
   p.set('d0', isoDate(s.departRange[0]));
   p.set('d1', isoDate(s.departRange[1]));
   p.set('a0', isoDate(s.arriveRange[0]));
@@ -80,6 +94,28 @@ export function decodeShareState(search: string): Partial<ShareState> | null {
   if (ld !== null && la !== null && la > ld) {
     out.lockedDepartMs = ld;
     out.lockedArriveMs = la;
+  }
+
+  // grand-tour state — only accepted as a complete, consistent set
+  if (p.get('mode') === 'tour') {
+    const route = (p.get('tr') ?? '').split('.');
+    const tofs = (p.get('tt') ?? '').split('.').map(Number);
+    const td = parseDate(p.get('td'));
+    const routeOk =
+      route.length >= 2 &&
+      route.length <= 6 &&
+      route.every(isPlanet) &&
+      route.every((r, i) => i === 0 || r !== route[i - 1]);
+    const tofsOk = tofs.length === route.length - 1 && tofs.every((t) => Number.isFinite(t) && t > 2);
+    if (routeOk && tofsOk && td !== null) {
+      out.mode = 'tour';
+      out.tourRoute = route as PlanetId[];
+      out.tourLegTofs = tofs.map(Math.round);
+      out.tourDepartMs = td;
+      const tf = p.get('tf');
+      if (tf === 'aerocapture' || tf === 'flyby') out.tourFinish = tf;
+      else out.tourFinish = 'capture';
+    }
   }
   return out;
 }

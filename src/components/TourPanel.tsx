@@ -1,13 +1,16 @@
-import { CheckCircle2, Flame, Gauge } from 'lucide-react';
+import { CheckCircle2, FileText, Flame, Gauge } from 'lucide-react';
 import type { TourEvaluation } from '../lib/tour';
 import { PLANETS } from '../lib/orbitalConstants';
 import { fmtDate, fmtNum } from '../lib/format';
 
 interface Props {
   evaluation: TourEvaluation | null;
+  /** False while the 3D mission is still assembling (report needs its geometry). */
+  canExport: boolean;
+  onExportPdf: () => void;
 }
 
-export default function TourPanel({ evaluation }: Props) {
+export default function TourPanel({ evaluation, canExport, onExportPdf }: Props) {
   if (!evaluation) {
     return (
       <div className="rounded-md border border-dashed border-grid-line px-3 py-6 text-center font-mono text-[11px] leading-relaxed text-text-lo">
@@ -125,6 +128,17 @@ export default function TourPanel({ evaluation }: Props) {
           </div>
         </section>
       )}
+
+      <button
+        type="button"
+        onClick={onExportPdf}
+        disabled={!canExport}
+        title={canExport ? 'Export one-page tour report' : 'assembling tour geometry…'}
+        className="flex w-full items-center justify-center gap-2 rounded-md border border-grid-line px-3 py-2 font-mono text-[11px] tracking-[0.2em] text-text-mid uppercase transition-colors hover:border-amber/60 hover:text-amber disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        <FileText size={13} />
+        Export PDF report
+      </button>
     </>
   );
 }

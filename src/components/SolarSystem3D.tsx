@@ -16,6 +16,7 @@ import {
   SafeCanvas,
   samplePath,
   Sun,
+  sunSceneSize,
   toScene,
   useFxSafe,
 } from './three/shared';
@@ -111,7 +112,7 @@ function Scene({
         speed={0.3}
       />
 
-      <Sun size={scale * 0.045} />
+      <Sun size={sunSceneSize(scale)} sceneScale={scale} />
 
       {/* orbit lines */}
       {shownPlanets.map((id) => {

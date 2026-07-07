@@ -8,6 +8,7 @@ import { fmtDate, fmtNum, isoDate } from './format';
 import { arrivalTradeTable, type Mission } from './mission';
 import { PLANETS } from './orbitalConstants';
 import { payloadForC3, type RocketDef } from './rocketData';
+import type { TourEvaluation } from './tour';
 import type { Vec3 } from './vec';
 
 const AU = 149_597_870.7;
@@ -216,4 +217,210 @@ export function generateMissionReport({
   doc.save(
     `mission_${mission.departPlanet}_${mission.arrivePlanet}_${isoDate(mission.departMs)}.pdf`,
   );
+}
+
+export interface TourReportInputs {
+  evaluation: TourEvaluation;
+  /** Assembled tour mission — supplies trajectory/orbits for the geometry panel. */
+  mission: Mission;
+  shareUrl: string;
+}
+
+/** One-page PDF report for a multi-leg grand tour. */
+export function generateTourReport({ evaluation, mission, shareUrl }: TourReportInputs) {
+  const ev = evaluation;
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const W = 210;
+  const H = 297;
+
+  doc.setFillColor(...BG);
+  doc.rect(0, 0, W, H, 'F');
+
+  // header
+  doc.setTextColor(...TEXT);
+  doc.setFont('courier', 'bold');
+  doc.setFontSize(16);
+  doc.text('PORKCHOP_  GRAND TOUR REPORT', 14, 18);
+  doc.setDrawColor(...ACCENT);
+  doc.setLineWidth(0.6);
+  doc.line(14, 21, W - 14, 21);
+
+  doc.setFontSize(11);
+  let rx = 14;
+  ev.route.forEach((pl, i) => {
+    if (i > 0) {
+      doc.setTextColor(...MID);
+      doc.text('->', rx, 28);
+      rx += doc.getTextWidth('->') + 2;
+    }
+    doc.setTextColor(...(i === 0 || i === ev.route.length - 1 ? AMBER : ACCENT));
+    doc.text(pl.toUpperCase(), rx, 28);
+    rx += doc.getTextWidth(pl.toUpperCase()) + 2;
+  });
+  doc.setFontSize(8);
+  doc.setTextColor(...MID);
+  doc.setFont('courier', 'normal');
+  doc.text(`generated ${isoDate(Date.now())} · porkchop-mission-planner.vercel.app`, W - 14, 28, {
+    align: 'right',
+  });
+
+  // key numbers panel
+  const finishLabel =
+    ev.finish === 'flyby'
+      ? 'flyby — no capture'
+      : ev.finish === 'aerocapture'
+        ? `aerocapture at ${ev.route[ev.route.length - 1]}`
+        : `capture at ${ev.route[ev.route.length - 1]}`;
+  const rows: [string, string][] = [
+    ['DEPARTURE', fmtDate(ev.departMs)],
+    ['FINAL ENCOUNTER', fmtDate(ev.legs[ev.legs.length - 1].arriveMs)],
+    [
+      'TOTAL FLIGHT',
+      `${Math.round(ev.totalTofDays).toLocaleString()} days (${(ev.totalTofDays / 365.25).toFixed(1)} yr)`,
+    ],
+    ['LAUNCH C3', `${fmtNum(ev.depC3, 1)} km2/s2`],
+    ['DEPARTURE v-inf', `${fmtNum(ev.depVinf)} km/s`],
+    [
+      'DEPARTURE BURN',
+      `${fmtNum(ev.dvDepart)} km/s (${PLANETS[ev.route[0]].parkingAltKm} km parking orbit)`,
+    ],
+    ['FLYBY PENALTIES', `${fmtNum(ev.dvFlybys)} km/s (${ev.flybys.length} assists)`],
+    ['FINISH', finishLabel],
+    ['CAPTURE BURN', ev.finish === 'flyby' ? '—' : `${fmtNum(ev.dvCapture)} km/s`],
+    ['TOTAL DELTA-V', `${fmtNum(ev.dvTotal)} km/s`],
+  ];
+
+  doc.setFillColor(...PANEL);
+  doc.roundedRect(14, 34, 88, 8 + rows.length * 6.4, 2, 2, 'F');
+  doc.setFontSize(8.2);
+  rows.forEach(([k, v], i) => {
+    const y = 41 + i * 6.4;
+    doc.setTextColor(...MID);
+    doc.text(k, 18, y);
+    doc.setTextColor(...(k === 'TOTAL DELTA-V' ? AMBER : TEXT));
+    doc.text(v, 98, y, { align: 'right' });
+  });
+
+  // tour geometry (vector, top-down ecliptic): all route orbits + trajectory
+  const gx = 108;
+  const gy = 34;
+  const gs = 88;
+  doc.setFillColor(...PANEL);
+  doc.roundedRect(gx, gy, gs, gs, 2, 2, 'F');
+  {
+    const all: Vec3[] = [
+      ...ev.route.flatMap((pl) => mission.orbitLoops[pl] ?? []),
+      ...mission.trajectory,
+    ];
+    let maxR = 1e-9;
+    for (const p of all) maxR = Math.max(maxR, Math.hypot(p[0], p[1]) / AU);
+    const k = (gs / 2 - 5) / maxR;
+    const cx = gx + gs / 2;
+    const cy = gy + gs / 2;
+    const px = (v: Vec3): [number, number] => [cx + (v[0] / AU) * k, cy - (v[1] / AU) * k];
+    const drawPath = (pts: Vec3[], rgb: [number, number, number], lw: number) => {
+      doc.setDrawColor(...rgb);
+      doc.setLineWidth(lw);
+      for (let i = 1; i < pts.length; i++) {
+        const a = px(pts[i - 1]);
+        const b = px(pts[i]);
+        doc.line(a[0], a[1], b[0], b[1]);
+      }
+    };
+    for (const pl of ev.route) drawPath(mission.orbitLoops[pl] ?? [], [70, 90, 120], 0.22);
+    drawPath(mission.trajectory, ACCENT, 0.55);
+    doc.setFillColor(...AMBER);
+    doc.circle(cx, cy, 1.2, 'F');
+    // encounter markers along the trajectory
+    doc.setFontSize(6);
+    const totalMs = mission.arriveMs - mission.departMs;
+    const markers = [
+      { ms: mission.departMs, label: ev.route[0].slice(0, 3).toUpperCase() },
+      ...ev.flybys.map((f) => ({ ms: f.ms, label: f.planet.slice(0, 3).toUpperCase() })),
+      { ms: mission.arriveMs, label: ev.route[ev.route.length - 1].slice(0, 3).toUpperCase() },
+    ];
+    for (const mk of markers) {
+      const frac = (mk.ms - mission.departMs) / totalMs;
+      const idx = Math.min(
+        mission.trajectory.length - 1,
+        Math.max(0, Math.round(frac * (mission.trajectory.length - 1))),
+      );
+      const pt = px(mission.trajectory[idx]);
+      doc.setFillColor(...ACCENT);
+      doc.circle(pt[0], pt[1], 0.9, 'F');
+      doc.setTextColor(...MID);
+      doc.text(mk.label, pt[0] + 1.6, pt[1] + 0.8);
+    }
+    doc.setTextColor(...MID);
+    doc.setFontSize(6.5);
+    doc.text('heliocentric ecliptic J2000 · top-down', gx + 3, gy + gs - 3);
+  }
+
+  let y = 34 + Math.max(8 + rows.length * 6.4, gs) + 10;
+
+  // legs table
+  doc.setFontSize(8);
+  doc.setTextColor(...ACCENT);
+  doc.text('LEGS', 14, y);
+  doc.setFontSize(7.5);
+  doc.setTextColor(...MID);
+  const lc = [14, 60, 100, 140];
+  doc.text('LEG', lc[0], y + 5.5);
+  doc.text('DEPART', lc[1], y + 5.5);
+  doc.text('ARRIVE', lc[2], y + 5.5);
+  doc.text('TOF d', lc[3], y + 5.5);
+  ev.legs.forEach((leg, i) => {
+    const ty = y + 10.5 + i * 4.6;
+    doc.setTextColor(...TEXT);
+    doc.text(`${leg.from} -> ${leg.to}`, lc[0], ty);
+    doc.text(fmtDate(leg.departMs), lc[1], ty);
+    doc.text(fmtDate(leg.arriveMs), lc[2], ty);
+    doc.text(String(Math.round(leg.tofDays)), lc[3], ty);
+  });
+  y += 10.5 + ev.legs.length * 4.6 + 8;
+
+  // gravity assists table
+  if (ev.flybys.length > 0) {
+    doc.setFontSize(8);
+    doc.setTextColor(...ACCENT);
+    doc.text('GRAVITY ASSISTS (patched-conic)', 14, y);
+    doc.setFontSize(7.5);
+    doc.setTextColor(...MID);
+    const fc = [14, 44, 76, 106, 136, 166];
+    doc.text('PLANET', fc[0], y + 5.5);
+    doc.text('DATE', fc[1], y + 5.5);
+    doc.text('v-inf i/o km/s', fc[2], y + 5.5);
+    doc.text('TURN req/max', fc[3], y + 5.5);
+    doc.text('PERIAPSIS km', fc[4], y + 5.5);
+    doc.text('DV km/s', fc[5], y + 5.5);
+    ev.flybys.forEach((fb, i) => {
+      const ty = y + 10.5 + i * 4.6;
+      doc.setTextColor(...TEXT);
+      doc.text(fb.planet, fc[0], ty);
+      doc.text(fmtDate(fb.ms), fc[1], ty);
+      doc.text(`${fmtNum(fb.vinfIn, 1)}/${fmtNum(fb.vinfOut, 1)}`, fc[2], ty);
+      doc.text(`${fb.turnReqDeg.toFixed(0)}/${fb.turnMaxDeg.toFixed(0)} deg`, fc[3], ty);
+      doc.text(Math.round(fb.altKm).toLocaleString(), fc[4], ty);
+      doc.setTextColor(...(fb.dv < 0.1 ? MID : AMBER));
+      doc.text(fb.ballistic ? 'ballistic' : fmtNum(fb.dv), fc[5], ty);
+    });
+    y += 10.5 + ev.flybys.length * 4.6 + 4;
+  }
+
+  // footer
+  doc.setDrawColor(40, 44, 60);
+  doc.setLineWidth(0.3);
+  doc.line(14, H - 20, W - 14, H - 20);
+  doc.setFontSize(6.5);
+  doc.setTextColor(...MID);
+  doc.text(
+    'Izzo Lambert legs · patched-conic flybys (turn bought with periapsis depth, min safe altitude enforced) · preliminary design, not ops-grade',
+    14,
+    H - 15,
+  );
+  const url = shareUrl.length > 120 ? shareUrl.slice(0, 117) + '...' : shareUrl;
+  doc.setTextColor(...ACCENT);
+  doc.text(url, 14, H - 10);
+
+  doc.save(`grandtour_${ev.route.join('-')}_${isoDate(ev.departMs)}.pdf`);
 }

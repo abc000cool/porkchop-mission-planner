@@ -97,12 +97,20 @@ export default function App() {
   const userClosed3D = useRef(false);
 
   // ---- Grand Tour mode ----
-  const [appMode, setAppMode] = useState<AppMode>('porkchop');
-  const [tourRoute, setTourRoute] = useState<PlanetId[]>(TOUR_PRESETS[0].route);
-  const [tourDepartMs, setTourDepartMs] = useState(() => Date.parse(TOUR_PRESETS[0].departIso));
-  const [tourLegTofs, setTourLegTofs] = useState<number[]>(TOUR_PRESETS[0].legTofDays);
+  const [appMode, setAppMode] = useState<AppMode>(URL_STATE?.mode === 'tour' ? 'tour' : 'porkchop');
+  const [tourRoute, setTourRoute] = useState<PlanetId[]>(
+    URL_STATE?.tourRoute ?? TOUR_PRESETS[0].route,
+  );
+  const [tourDepartMs, setTourDepartMs] = useState(
+    () => URL_STATE?.tourDepartMs ?? Date.parse(TOUR_PRESETS[0].departIso),
+  );
+  const [tourLegTofs, setTourLegTofs] = useState<number[]>(
+    URL_STATE?.tourLegTofs ?? TOUR_PRESETS[0].legTofDays,
+  );
   const [tourSlack, setTourSlack] = useState(180);
-  const [tourFinish, setTourFinish] = useState<TourFinish>(TOUR_PRESETS[0].finish);
+  const [tourFinish, setTourFinish] = useState<TourFinish>(
+    URL_STATE?.tourFinish ?? TOUR_PRESETS[0].finish,
+  );
   const tourOpt = useTourOptimizer();
 
   const tourEval = useMemo(
@@ -248,9 +256,28 @@ export default function App() {
       maxRevs,
       lockedDepartMs: locked?.departMs ?? null,
       lockedArriveMs: locked?.arriveMs ?? null,
+      mode: appMode,
+      tourRoute,
+      tourDepartMs,
+      tourLegTofs,
+      tourFinish,
     });
     window.history.replaceState(null, '', `${window.location.pathname}?${qs}`);
-  }, [config, metric, palette, aerocapture, rocketId, prograde, maxRevs, locked]);
+  }, [
+    config,
+    metric,
+    palette,
+    aerocapture,
+    rocketId,
+    prograde,
+    maxRevs,
+    locked,
+    appMode,
+    tourRoute,
+    tourDepartMs,
+    tourLegTofs,
+    tourFinish,
+  ]);
 
   const onPlanets = useCallback((dep: PlanetId, arr: PlanetId) => {
     setConfig(defaultConfig(dep, arr));
@@ -328,6 +355,17 @@ export default function App() {
     },
     [aerocapture, prograde],
   );
+
+  const exportTourPdf = useCallback(async () => {
+    if (!tourEval) return;
+    const { generateTourReport } = await import('./lib/report');
+    // build geometry fresh so the report always matches the shown numbers
+    generateTourReport({
+      evaluation: tourEval,
+      mission: buildTourMission(tourEval),
+      shareUrl: window.location.href,
+    });
+  }, [tourEval]);
 
   const exportPdf = useCallback(async () => {
     if (!locked) return;
@@ -680,7 +718,7 @@ export default function App() {
         </main>
 
         <aside className="shrink-0 space-y-3 overflow-y-auto border-t border-grid-line bg-void p-3 lg:w-[300px] lg:border-t-0 lg:border-l">
-          <TourPanel evaluation={tourEval} />
+          <TourPanel evaluation={tourEval} canExport={!!tourEval} onExportPdf={exportTourPdf} />
         </aside>
       </div>
       )}

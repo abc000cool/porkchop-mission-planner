@@ -19,6 +19,7 @@ import {
   SafeCanvas,
   samplePath,
   Sun,
+  sunSceneSize,
   toScene,
   useFxSafe,
 } from './three/shared';
@@ -93,7 +94,7 @@ function LapseScene({
         fade
         speed={0.3}
       />
-      <Sun size={scale * 0.045} />
+      <Sun size={sunSceneSize(scale)} sceneScale={scale} />
       {shown.map((id) => (
         <Line
           key={`orbit-${id}`}

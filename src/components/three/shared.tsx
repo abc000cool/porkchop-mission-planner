@@ -68,6 +68,11 @@ export class GLBoundary extends Component<
   }
 }
 
+// Some drivers pass the capability probe yet still crash inside
+// postprocessing. Once that happens, stay off bloom for the whole session so
+// every subsequent canvas mounts cleanly instead of re-crashing first.
+let bloomDisabledThisSession = false;
+
 /**
  * Canvas wrapper with graceful GPU degradation: bloom effects → plain WebGL
  * → "unavailable" message. Children receive whether effects are allowed.
@@ -80,7 +85,7 @@ export function SafeCanvas({
   camera?: { fov?: number; near?: number; far?: number; position?: [number, number, number] };
 }) {
   // 2 = bloom effects, 1 = plain WebGL, 0 = unavailable on this GPU
-  const [tier, setTier] = useState(2);
+  const [tier, setTier] = useState(() => (bloomDisabledThisSession ? 1 : 2));
   if (tier === 0) {
     return (
       <div className="flex h-full items-center justify-center font-mono text-[11px] tracking-[0.2em] text-text-lo">
@@ -91,7 +96,12 @@ export function SafeCanvas({
   return (
     <GLBoundary
       key={tier}
-      onError={() => setTier((t) => Math.max(0, t - 1))}
+      onError={() =>
+        setTier((t) => {
+          if (t === 2) bloomDisabledThisSession = true;
+          return Math.max(0, t - 1);
+        })
+      }
       fallback={
         <div className="flex h-full items-center justify-center font-mono text-[11px] tracking-[0.2em] text-text-lo">
           RESTARTING RENDERER…
@@ -113,12 +123,45 @@ export function SafeCanvas({
   );
 }
 
-export function Sun({ size }: { size: number }) {
+/** Soft radial glow texture for the sun — keeps it readable as a star even
+ * when bloom is unavailable, without occluding the inner planets. */
+function useGlowTexture(): THREE.CanvasTexture {
+  return useMemo(() => {
+    const c = document.createElement('canvas');
+    c.width = c.height = 128;
+    const ctx = c.getContext('2d')!;
+    const g = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+    g.addColorStop(0, 'rgba(255,242,205,0.95)');
+    g.addColorStop(0.2, 'rgba(255,205,125,0.5)');
+    g.addColorStop(0.55, 'rgba(255,180,80,0.12)');
+    g.addColorStop(1, 'rgba(255,180,80,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 128, 128);
+    return new THREE.CanvasTexture(c);
+  }, []);
+}
+
+export function Sun({ size, sceneScale }: { size: number; sceneScale?: number }) {
+  const glow = useGlowTexture();
+  // the glow tracks the scene so the sun stays readable in outer-system views
+  // where the sphere itself is capped small; it's additive + non-depth-writing,
+  // so inner planets remain visible through it
+  const glowSize = Math.max(size * 4, (sceneScale ?? 0) * 0.055);
   return (
-    <mesh>
-      <sphereGeometry args={[size, 48, 48]} />
-      <meshBasicMaterial color={[7, 4.6, 1.7]} toneMapped={false} />
-    </mesh>
+    <group>
+      <mesh>
+        <sphereGeometry args={[size, 48, 48]} />
+        <meshBasicMaterial color={[7, 4.6, 1.7]} toneMapped={false} />
+      </mesh>
+      <sprite scale={[glowSize, glowSize, 1]}>
+        <spriteMaterial
+          map={glow}
+          transparent
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+        />
+      </sprite>
+    </group>
   );
 }
 
@@ -181,7 +224,23 @@ export function Planet({
   );
 }
 
-/** Planet display radius (not to scale — real scale would be invisible). */
+/**
+ * Planet display radius (not to scale — real scale would be invisible).
+ * Grows with the scene, but is capped at a fraction of the planet's own
+ * orbit radius so inner planets never balloon over each other, the sun, or
+ * the HUD in outer-system scenes.
+ */
 export function planetSceneSize(id: PlanetId, sceneScale: number, active: boolean): number {
-  return sceneScale * 0.02 * Math.cbrt(PLANETS[id].radiusKm / 6371) * (active ? 1.25 : 0.8);
+  const base =
+    sceneScale * 0.018 * Math.cbrt(PLANETS[id].radiusKm / 6371) * (active ? 1.15 : 0.75);
+  const orbitCap = PLANETS[id].semiMajorAxisAu * 0.1;
+  return Math.min(base, orbitCap);
+}
+
+/**
+ * Sun display radius: scales with the scene but never approaches Mercury's
+ * orbit (0.39 AU), so the inner planets stay visible in outer-system views.
+ */
+export function sunSceneSize(sceneScale: number): number {
+  return Math.min(sceneScale * 0.045, 0.16);
 }
